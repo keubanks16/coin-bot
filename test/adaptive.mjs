@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import { classifyMarket, adaptiveScore, learnOutcome } from '../src/adaptive.js';
+const token={stats1h:{priceChange:8,buyOrganicVolume:200,sellOrganicVolume:100},stats5m:{priceChange:2}};
+assert.equal(classifyMarket(token),'scalp');
+assert.equal(adaptiveScore(token,10,{}).strategy,'scalp');
+const model=learnOutcome({},'scalp',4);
+assert.equal(model.scalp.wins,1);
+assert.equal(model.scalp.net,4);
+assert.equal(learnOutcome(model,'scalp',-2).scalp.losses,1);
+console.log('adaptive strategy tests passed');
