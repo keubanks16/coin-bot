@@ -12,7 +12,7 @@ plus Pause, Run now, Sell (one) and Sell all buttons.
 
 ## How it trades
 
-Every minute, the bot checks open positions. Every 5 minutes, it scans Jupiter's top
+Every minute, the bot checks open positions. Every minute (when capacity permits), it scans Jupiter's top
 trending and top traded tokens (1-hour window).
 
 **Safety filter.** A token must pass all of these before it's considered:
@@ -30,7 +30,7 @@ trending and top traded tokens (1-hour window).
 - organic buy volume at least 1.15× organic sell volume, with more net buyers than sellers
 - at least $50k of volume in the hour
 
-The strongest candidates are bought first, up to 4 positions. Each position is 15% of
+Paper mode classifies eligible tokens as scalping or momentum opportunities and learns from completed paper trades. Scalps use a 3.5% stop, 6% target, 2.5% trail after a 3.5% gain, and a 1-hour maximum hold. Momentum retains the original exit rules. The dashboard refreshes every 10 seconds, but Cloudflare cron trading cycles still run at most once per minute.\n\nThe strongest candidates are bought first, up to 4 positions. Each position is 15% of
 equity, capped at $250.
 
 **Exits.** Each position is sold on whichever comes first:
@@ -151,3 +151,7 @@ the public endpoint for balance checks.
 - **`order not buildable ... code 1`.** The wallet doesn't hold enough USDC.
 - **Jupiter `401`/`403`.** Check `JUPITER_API_KEY`.
 - **Logs.** Run `npx wrangler tail` to watch the bot in real time.
+
+## Adaptive paper trading v2
+
+The dashboard shows closed-paper-trade results by strategy, including win rate, realized P&L and smoothed learning confidence. Reset paper account also clears the adaptive model. The standard `npm test` command now includes adaptive strategy tests. This is a lightweight statistics model, not a pretrained AI or a guarantee of profitability. Keep `LIVE_TRADING = "false"` until thoroughly tested. GitHub branch `phantom-v2-paper-ai` may differ from `main`; reconcile branches before merging.
