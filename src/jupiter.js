@@ -22,7 +22,11 @@ export class Jupiter {
   async request(path, init = {}, attempt = 0) {
     const res = await fetch(this.base + path, { ...init, headers: this.headers(init.headers) });
     if (res.status === 429 && attempt < 2) {
-      await sleep(1000 * (attempt + 1));
+      const retryAfter = Number(res.headers.get('retry-after'));
+      const delay = Number.isFinite(retryAfter) && retryAfter > 0
+        ? Math.min(retryAfter * 1000, 15000)
+        : 2000 * (2 ** attempt);
+      await sleep(delay);
       return this.request(path, init, attempt + 1);
     }
     const text = await res.text();
