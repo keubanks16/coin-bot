@@ -83,6 +83,8 @@
     <div class="tile"><div class="k">Win rate</div><div class="v" id="winrate">–</div></div>
   </div>
 
+  <div class="card"><h2>Bot monitoring</h2><div id="monitorStatus" class="rules"></div></div>
+  <div class="card"><h2>Coin scan diagnostics</h2><div id="scanDiagnostics" class="rules"></div></div>
   <div class="card"><h2>Equity · 7 days</h2><svg id="chart" viewBox="0 0 600 140" preserveAspectRatio="none"></svg></div>
 
   <div class="card" id="aiCard"><h2>Adaptive strategy performance · paper</h2><div class="scroll" id="aiStats"></div><p class="note">Based on closed paper trades. Estimated confidence is not a prediction of future returns.</p></div>
@@ -133,7 +135,11 @@
     $('pauseBtn').textContent = s.paused ? 'Resume' : 'Pause';
     $('wallet').textContent = s.wallet ? s.wallet.slice(0, 4) + '…' + s.wallet.slice(-4) : '';
     $('resetBtn').hidden = s.mode !== 'paper';
-    $('note').textContent = (s.lastScanNote || '') + ' · Dashboard refreshes every 10 seconds; trading cycles run on the Cloudflare one-minute cron.';
+    $('note').textContent = (s.lastScanNote || '') + ' · Dashboard refreshes every 10 seconds; discovery runs every minute; paper exits target every 10 seconds.';
+    function status(ts, interval) { if (!ts) return 'Not recorded'; var seconds = Math.max(0, Math.round((Date.now()-ts)/1000)); return new Date(ts).toLocaleTimeString() + ' (' + seconds + 's ago)' + (seconds > interval*3 ? ' — delayed' : ''); }
+    $('monitorStatus').textContent = 'Last trading cycle: ' + status(s.lastCycleAt, 60) + ' · Last fast paper check: ' + status(s.lastFastCheckAt, 10) + ' · Dashboard refreshed: ' + new Date().toLocaleTimeString();
+    var details = s.scanDetails;
+    if (details) { var reasons = Object.entries(details.rejects || {}).sort(function(a,b){return b[1]-a[1];}); $('scanDiagnostics').innerHTML = 'Last scan: ' + esc(new Date(details.at).toLocaleTimeString()) + ' · ' + details.scanned + ' discovered · ' + details.eligible + ' eligible' + (reasons.length ? '<table><tr><th>Rejection reason</th><th class="r">Tokens</th></tr>' + reasons.map(function(x){return '<tr><td>' + esc(x[0]) + '</td><td class="r">' + x[1] + '</td></tr>';}).join('') + '</table>' : ''); } else { $('scanDiagnostics').textContent = 'Waiting for a discovery scan.'; }
     $('aiCard').hidden = s.mode !== 'paper';
     var ai = s.ai || {};
     var aiHtml = '<table><tr><th>Strategy</th><th class="r">Trades</th><th class="r">Win rate</th><th class="r">Realized P&L</th><th class="r">Learning confidence</th></tr>';
