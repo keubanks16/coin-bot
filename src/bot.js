@@ -188,7 +188,6 @@ export async function runCycle(env, { forceScan = false, manageOnly = false } = 
   if (!(await store.acquireCycleLock(now))) return { skipped: 'another cycle is running' };
 
   try {
-    await store.set(manageOnly ? 'last_fast_check_paper' : `last_cycle_${mode}`, now);
     // 1) Manage open positions.
     let positions = await store.positions(mode);
     const prices = await priceOpenPositions(ctx, positions);
@@ -251,6 +250,7 @@ export async function runCycle(env, { forceScan = false, manageOnly = false } = 
       if (!picks.length) await store.set('last_scan_note', `${new Date(now).toISOString()}: scanned ${n} tokens, none passed filters`);
     }
 
+    await store.set(manageOnly ? 'last_fast_check_paper' : `last_cycle_${mode}`, Date.now());
     return { mode, equity, cash, positions: positions.length, bought, scanned, paused, halted };
   } catch (e) {
     await store.log('error', `Cycle error: ${e.message}`);
