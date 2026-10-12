@@ -121,7 +121,7 @@ export class Store {
       this.db.prepare("DELETE FROM trades WHERE mode = 'paper'"),
       this.db.prepare("DELETE FROM equity WHERE mode = 'paper'"),
       this.db.prepare("DELETE FROM cooldowns WHERE mode = 'paper'"),
-      this.db.prepare("DELETE FROM state WHERE k LIKE 'paper_%' OR k LIKE 'day_start_paper_%'"),
+      this.db.prepare("DELETE FROM state WHERE k LIKE 'paper_%' OR k LIKE 'day_start_paper_%' OR k LIKE 'v2_strategy_%' OR k = 'v2_learning_paper' OR k = 'last_scan_paper'"),
     ]);
   }
 }
