@@ -55,6 +55,9 @@ async function getState(env) {
     stats,
     ai: cfg.LIVE ? null : await store.get('v2_learning_paper', {}),
     scanEveryMin: cfg.SCAN_EVERY_MIN,
+    lastCycleAt: await store.get(`last_cycle_${mode}`, null),
+    lastFastCheckAt: cfg.LIVE ? null : await store.get('last_fast_check_paper', null),
+    scanDetails: await store.get(`last_scan_details_${mode}`, null),
     lastScanNote: await store.get('last_scan_note', null),
     history: history.filter((_, i) => i % step === 0 || i === history.length - 1),
     rules: {
