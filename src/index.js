@@ -53,6 +53,8 @@ async function getState(env) {
     trades: await store.trades(mode, 50),
     events: await store.events(40),
     stats,
+    ai: cfg.LIVE ? null : await store.get('v2_learning_paper', {}),
+    scanEveryMin: cfg.SCAN_EVERY_MIN,
     lastScanNote: await store.get('last_scan_note', null),
     history: history.filter((_, i) => i % step === 0 || i === history.length - 1),
     rules: {
