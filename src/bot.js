@@ -182,9 +182,7 @@ export async function runCycle(env, { forceScan = false } = {}) {
   const { store, cfg, mode } = ctx;
   const now = Date.now();
 
-  const lock = await store.get('lock', 0);
-  if (now - lock < 90e3) return { skipped: 'another cycle is running' };
-  await store.set('lock', now);
+  if (!(await store.acquireCycleLock(now))) return { skipped: 'another cycle is running' };
 
   try {
     // 1) Manage open positions.
@@ -253,6 +251,6 @@ export async function runCycle(env, { forceScan = false } = {}) {
     await store.log('error', `Cycle error: ${e.message}`);
     throw e;
   } finally {
-    await store.set('lock', 0);
+    await store.releaseCycleLock(now);
   }
 }
