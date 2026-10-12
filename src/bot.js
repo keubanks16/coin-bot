@@ -160,20 +160,23 @@ async function findCandidates(ctx, heldMints) {
     for (const t of l.value || []) if (t?.id && !seen.has(t.id)) seen.set(t.id, t);
   }
   const out = [];
+  const rejects = {};
+  const reject = (reason) => { rejects[reason] = (rejects[reason] || 0) + 1; };
   const model = await ctx.store.get('v2_learning_paper', {});
   const now = Date.now();
   for (const t of seen.values()) {
-    if (heldMints.has(t.id)) continue;
-    if (safetyReject(t, ctx.cfg, now)) continue;
+    if (heldMints.has(t.id)) { reject('Already held'); continue; }
+    const unsafe = safetyReject(t, ctx.cfg, now);
+    if (unsafe) { reject(unsafe); continue; }
     const score = entryScore(t, ctx.cfg);
+    if (score === null) { reject('Entry momentum / volume criteria'); continue; }
     const adaptive = !ctx.cfg.LIVE ? adaptiveScore(t, score, model) : null;
-    if (!ctx.cfg.LIVE && !adaptive) continue;
-    if (score === null) continue;
-    if (await ctx.store.cooldownActive(ctx.mode, t.id, now)) continue;
+    if (!ctx.cfg.LIVE && !adaptive) { reject('Adaptive market pattern'); continue; }
+    if (await ctx.store.cooldownActive(ctx.mode, t.id, now)) { reject('Cooldown'); continue; }
     out.push({ token: t, score: adaptive?.score ?? score, strategy: adaptive?.strategy ?? 'momentum' });
   }
   out.sort((a, b) => b.score - a.score);
-  return { scanned: seen.size, picks: out };
+  return { scanned: seen.size, picks: out, rejects };
 }
 
 /** Run one cycle. Returns a short summary object. */
@@ -185,6 +188,7 @@ export async function runCycle(env, { forceScan = false, manageOnly = false } = 
   if (!(await store.acquireCycleLock(now))) return { skipped: 'another cycle is running' };
 
   try {
+    await store.set(manageOnly ? 'last_fast_check_paper' : `last_cycle_${mode}`, now);
     // 1) Manage open positions.
     let positions = await store.positions(mode);
     const prices = await priceOpenPositions(ctx, positions);
@@ -229,7 +233,8 @@ export async function runCycle(env, { forceScan = false, manageOnly = false } = 
         const sol = await ctx.rpc.solBalance(ctx.wallet.publicKey);
         if (sol < 0.005) await store.log('warn', `Low SOL for fees (${sol.toFixed(4)} SOL). Buys may fail unless Jupiter sponsors gas.`);
       }
-      const { scanned: n, picks } = await findCandidates(ctx, new Set(positions.map((p) => p.mint)));
+      const { scanned: n, picks, rejects } = await findCandidates(ctx, new Set(positions.map((p) => p.mint)));
+      await store.set(`last_scan_details_${mode}`, { at: now, scanned: n, eligible: picks.length, rejects });
       scanned = n;
       let slots = cfg.MAX_POSITIONS - positions.length;
       let availableCash = cash;
