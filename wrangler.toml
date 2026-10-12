@@ -19,6 +19,7 @@ database_id = "96bb9edb-44e5-453a-a54f-74dea3cd4960"
 [vars]
 # Paper trading until you flip this to "true" and redeploy.
 LIVE_TRADING = "false"
+SCAN_EVERY_MIN = "1"
 PAPER_START_USD = "1000"
 
 # Risk settings (see src/strategy.js for every option and its default)
