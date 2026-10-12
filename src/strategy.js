@@ -33,7 +33,12 @@ const DEFAULTS = {
   MAX_1H_CHANGE_PCT: 25,
   MAX_5M_CHANGE_PCT: 6,
   MIN_ORGANIC_BUY_RATIO: 1.15, // organic buy volume / organic sell volume (1h)
-  PAPER_SLIPPAGE_BPS: 50, // extra haircut on paper fills so paper isn't rosier than live
+  PAPER_SLIPPAGE_BPS: 50,
+  SCALP_STOP_LOSS_PCT: 0.035,
+  SCALP_TAKE_PROFIT_PCT: 0.06,
+  SCALP_TRAIL_ARM_PCT: 0.035,
+  SCALP_TRAIL_PCT: 0.025,
+  SCALP_MAX_HOLD_HOURS: 1, // extra haircut on paper fills so paper isn't rosier than live
 };
 
 export function loadConfig(env = {}) {
@@ -104,7 +109,8 @@ export function entryScore(t, cfg) {
  * Decide whether to close a position at the current price.
  * Returns { sell: bool, reason, peak }.
  */
-export function exitDecision(pos, price, cfg, now = Date.now()) {
+export function exitDecision(pos, price, cfg, now = Date.now(), strategy = 'momentum') {
+  if (strategy === 'scalp') cfg = { ...cfg, STOP_LOSS_PCT: cfg.SCALP_STOP_LOSS_PCT, TAKE_PROFIT_PCT: cfg.SCALP_TAKE_PROFIT_PCT, TRAIL_ARM_PCT: cfg.SCALP_TRAIL_ARM_PCT, TRAIL_PCT: cfg.SCALP_TRAIL_PCT, MAX_HOLD_HOURS: cfg.SCALP_MAX_HOLD_HOURS };
   const peak = Math.max(pos.peak_price || pos.entry_price, price);
   const pnl = price / pos.entry_price - 1;
   const peakGain = peak / pos.entry_price - 1;
