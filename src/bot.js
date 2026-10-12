@@ -177,7 +177,7 @@ async function findCandidates(ctx, heldMints) {
 }
 
 /** Run one cycle. Returns a short summary object. */
-export async function runCycle(env, { forceScan = false } = {}) {
+export async function runCycle(env, { forceScan = false, manageOnly = false } = {}) {
   const ctx = await makeContext(env);
   const { store, cfg, mode } = ctx;
   const now = Date.now();
@@ -223,7 +223,7 @@ export async function runCycle(env, { forceScan = false } = {}) {
     const scanDue = forceScan || now - lastScan >= cfg.SCAN_EVERY_MIN * 60e3 - 15e3;
     let bought = 0;
     let scanned = 0;
-    if (!paused && !halted && scanDue && positions.length < cfg.MAX_POSITIONS) {
+    if (!manageOnly && !paused && !halted && scanDue && positions.length < cfg.MAX_POSITIONS) {
       await store.set(`last_scan_${mode}`, now);
       if (cfg.LIVE) {
         const sol = await ctx.rpc.solBalance(ctx.wallet.publicKey);
