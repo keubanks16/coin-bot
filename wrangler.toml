@@ -1,0 +1,41 @@
+name = "phantom-alt-bot"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+# Run a cycle every minute (exits are checked every run, new entries every SCAN_EVERY_MIN).
+[triggers]
+crons = ["* * * * *"]
+
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "phantom-alt-bot"
+database_id = "PASTE_DATABASE_ID_HERE"
+
+[vars]
+# Paper trading until you flip this to "true" and redeploy.
+LIVE_TRADING = "false"
+PAPER_START_USD = "1000"
+
+# Risk settings (see src/strategy.js for every option and its default)
+POSITION_PCT = "0.15"
+MAX_POSITIONS = "4"
+MAX_TRADE_USD = "250"
+STOP_LOSS_PCT = "0.08"
+TAKE_PROFIT_PCT = "0.25"
+TRAIL_ARM_PCT = "0.10"
+TRAIL_PCT = "0.06"
+MAX_HOLD_HOURS = "24"
+DAILY_LOSS_LIMIT_PCT = "0.08"
+
+# Optional: a paid/dedicated RPC is more reliable than the public one in live mode
+# SOLANA_RPC_URL = "https://mainnet.helius-rpc.com/?api-key=..."
+
+# Secrets (set with `npx wrangler secret put NAME`, never put them in this file):
+#   DASHBOARD_PASSWORD   - password for the dashboard
+#   JUPITER_API_KEY      - free key from https://developers.jup.ag/portal
+#   WALLET_PRIVATE_KEY   - only needed for live mode (Phantom > Show Private Key)
