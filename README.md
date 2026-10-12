@@ -151,3 +151,4 @@ the public endpoint for balance checks.
 - **`order not buildable ... code 1`.** The wallet doesn't hold enough USDC.
 - **Jupiter `401`/`403`.** Check `JUPITER_API_KEY`.
 - **Logs.** Run `npx wrangler tail` to watch the bot in real time.
+- 
