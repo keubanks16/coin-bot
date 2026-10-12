@@ -1,0 +1,15 @@
+{
+  "name": "phantom-alt-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --test-scheduled",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute phantom-alt-bot --remote --file=schema.sql",
+    "test": "node --no-warnings test/run.mjs && node --no-warnings test/worker.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

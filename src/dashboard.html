@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alt Bot</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #14171c; --muted: #6b7280; --line: #e5e7eb;
+    --up: #0f9d58; --down: #d93025; --accent: #6d4aff; --warn: #b45309; --chip: #eef0f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d0f13; --panel: #161a20; --ink: #e8eaee; --muted: #8b93a1; --line: #262b33;
+      --up: #34c77b; --down: #ff6b5e; --accent: #9b85ff; --warn: #f0a33a; --chip: #1f242c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 16px; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+  h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+  .badge { font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px; text-transform: uppercase; letter-spacing: .04em; }
+  .badge.paper { background: var(--chip); color: var(--accent); }
+  .badge.live { background: var(--down); color: #fff; }
+  .badge.paused { background: var(--chip); color: var(--warn); }
+  .wallet { color: var(--muted); font-size: 13px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .spacer { flex: 1; }
+  button { font: inherit; font-size: 14px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); padding: 7px 12px; border-radius: 8px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.danger { color: var(--down); }
+  button:disabled { opacity: .5; cursor: default; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 12px; }
+  .tile, .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+  .tile .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+  .tile .v { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .up { color: var(--up); } .down { color: var(--down); }
+  .card { margin-bottom: 12px; }
+  .card h2 { font-size: 14px; margin: 0 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  svg { display: block; width: 100%; height: 140px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--line); font-size: 14px; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  td.r, th.r { text-align: right; }
+  .scroll { overflow-x: auto; }
+  .empty { color: var(--muted); padding: 6px 0; }
+  .log { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; max-height: 260px; overflow: auto; }
+  .log div { padding: 3px 0; border-bottom: 1px dashed var(--line); }
+  .log .error { color: var(--down); } .log .warn { color: var(--warn); }
+  .rules { color: var(--muted); font-size: 13px; }
+  .login { max-width: 340px; margin: 18vh auto; text-align: center; }
+  .login input { width: 100%; font: inherit; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); margin: 12px 0; }
+  a { color: var(--accent); }
+  .note { color: var(--muted); font-size: 13px; margin: -4px 0 12px; }
+</style>
+</head>
+<body>
+<div id="login" class="login" hidden>
+  <h1>Alt Bot</h1>
+  <input id="pw" type="password" placeholder="Dashboard password" autocomplete="current-password">
+  <button id="go">Unlock</button>
+  <p id="loginErr" class="down"></p>
+</div>
+
+<div id="app" class="wrap" hidden>
+  <header>
+    <h1>Alt Bot</h1>
+    <span id="mode" class="badge"></span>
+    <span id="pausedBadge" class="badge paused" hidden>Paused</span>
+    <span id="wallet" class="wallet"></span>
+    <span class="spacer"></span>
+    <button id="runBtn">Run now</button>
+    <button id="pauseBtn">Pause</button>
+    <button id="sellAllBtn" class="danger">Sell all</button>
+  </header>
+  <p id="note" class="note"></p>
+
+  <div class="tiles">
+    <div class="tile"><div class="k">Equity</div><div class="v" id="equity">–</div></div>
+    <div class="tile"><div class="k">USDC cash</div><div class="v" id="cash">–</div></div>
+    <div class="tile"><div class="k">Today</div><div class="v" id="today">–</div></div>
+    <div class="tile"><div class="k">All-time</div><div class="v" id="total">–</div></div>
+    <div class="tile"><div class="k">Win rate</div><div class="v" id="winrate">–</div></div>
+  </div>
+
+  <div class="card"><h2>Equity · 7 days</h2><svg id="chart" viewBox="0 0 600 140" preserveAspectRatio="none"></svg></div>
+
+  <div class="card"><h2>Open positions</h2><div class="scroll" id="positions"></div></div>
+  <div class="card"><h2>Recent trades</h2><div class="scroll" id="trades"></div></div>
+  <div class="card"><h2>Activity</h2><div class="log" id="events"></div></div>
+  <div class="card rules" id="rules"></div>
+  <p class="rules"><button id="resetBtn" hidden>Reset paper account</button> <button id="logoutBtn">Log out</button></p>
+</div>
+
+<script>
+(function () {
+  var KEY = 'altbot_key';
+  var key = null;
+  try { key = localStorage.getItem(KEY); } catch (e) {}
+  var state = null;
+
+  function $(id) { return document.getElementById(id); }
+  function usd(n) { if (n === null || n === undefined) return '–'; var s = Math.abs(n) >= 1000 ? n.toLocaleString(undefined, { maximumFractionDigits: 0 }) : n.toFixed(2); return '$' + s; }
+  function signed(n) { return (n >= 0 ? '+' : '−') + usd(Math.abs(n)); }
+  function pct(n) { return (n >= 0 ? '+' : '−') + Math.abs(n * 100).toFixed(1) + '%'; }
+  function cls(n) { return n > 0 ? 'up' : n < 0 ? 'down' : ''; }
+  function ago(ts) { var m = Math.round((Date.now() - ts) / 60000); if (m < 60) return m + 'm'; var h = Math.round(m / 60); return h < 48 ? h + 'h' : Math.round(h / 24) + 'd'; }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function px(n) { return n >= 1 ? n.toFixed(4) : n.toPrecision(4); }
+
+  function api(path, method, body) {
+    return fetch(path, {
+      method: method || 'GET',
+      headers: { 'x-dash-key': key || '', 'content-type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined
+    }).then(function (r) {
+      if (r.status === 401) { showLogin('Wrong password'); throw new Error('unauthorized'); }
+      return r.json();
+    });
+  }
+
+  function showLogin(msg) {
+    $('app').hidden = true; $('login').hidden = false; $('loginErr').textContent = msg || '';
+  }
+
+  function render(s) {
+    state = s;
+    $('login').hidden = true; $('app').hidden = false;
+    $('mode').textContent = s.mode === 'live' ? 'Live' : 'Paper';
+    $('mode').className = 'badge ' + s.mode;
+    $('pausedBadge').hidden = !s.paused;
+    $('pauseBtn').textContent = s.paused ? 'Resume' : 'Pause';
+    $('wallet').textContent = s.wallet ? s.wallet.slice(0, 4) + '…' + s.wallet.slice(-4) : '';
+    $('resetBtn').hidden = s.mode !== 'paper';
+    $('note').textContent = s.lastScanNote || '';
+
+    $('equity').textContent = usd(s.equity);
+    $('cash').textContent = usd(s.cash);
+    $('today').textContent = pct(s.dayChange || 0);
+    $('today').className = 'v ' + cls(s.dayChange);
+    var total = s.equity != null && s.startEquity ? s.equity - s.startEquity : 0;
+    $('total').textContent = signed(total);
+    $('total').className = 'v ' + cls(total);
+    var st = s.stats || {};
+    $('winrate').textContent = st.sells ? Math.round(100 * st.wins / st.sells) + '% (' + st.sells + ')' : '–';
+
+    drawChart(s.history || []);
+
+    if (!s.positions.length) {
+      $('positions').innerHTML = '<div class="empty">No open positions. The bot scans every few minutes.</div>';
+    } else {
+      var h = '<table><tr><th>Token</th><th class="r">Cost</th><th class="r">Value</th><th class="r">P&amp;L</th><th class="r">Held</th><th></th></tr>';
+      s.positions.forEach(function (p) {
+        h += '<tr><td><b>' + esc(p.symbol) + '</b></td><td class="r">' + usd(p.cost) + '</td><td class="r">' + usd(p.value) +
+          '</td><td class="r ' + cls(p.pnl) + '">' + signed(p.pnl) + ' (' + pct(p.pnlPct) + ')</td><td class="r">' + ago(p.openedAt) +
+          '</td><td class="r"><button data-sell="' + esc(p.mint) + '">Sell</button></td></tr>';
+      });
+      $('positions').innerHTML = h + '</table>';
+    }
+
+    if (!s.trades.length) {
+      $('trades').innerHTML = '<div class="empty">No trades yet.</div>';
+    } else {
+      var t = '<table><tr><th>When</th><th>Side</th><th>Token</th><th class="r">USD</th><th class="r">Price</th><th class="r">P&amp;L</th><th>Why</th></tr>';
+      s.trades.forEach(function (x) {
+        var link = x.sig ? ' <a href="https://solscan.io/tx/' + esc(x.sig) + '" target="_blank" rel="noopener">tx</a>' : '';
+        t += '<tr><td>' + ago(x.ts) + '</td><td>' + x.side + '</td><td><b>' + esc(x.symbol) + '</b>' + link + '</td><td class="r">' + usd(x.usd) +
+          '</td><td class="r">' + px(x.price) + '</td><td class="r ' + cls(x.pnl_usd || 0) + '">' + (x.side === 'sell' ? signed(x.pnl_usd) : '') +
+          '</td><td>' + esc(x.reason || '') + '</td></tr>';
+      });
+      $('trades').innerHTML = t + '</table>';
+    }
+
+    $('events').innerHTML = s.events.length ? s.events.map(function (e) {
+      return '<div class="' + e.level + '">' + new Date(e.ts).toLocaleString() + ' · ' + esc(e.msg) + '</div>';
+    }).join('') : '<div class="empty">Nothing yet.</div>';
+
+    var r = s.rules;
+    $('rules').innerHTML = '<b>Rules</b> · up to ' + r.maxPositions + ' positions, ' + Math.round(r.positionPct * 100) + '% of equity each (max ' + usd(r.maxTrade) +
+      ') · stop loss −' + Math.round(r.stopLoss * 100) + '% · take profit +' + Math.round(r.takeProfit * 100) + '% · trailing stop ' + Math.round(r.trail * 100) +
+      '% after +' + Math.round(r.trailArm * 100) + '% · max hold ' + r.maxHoldHours + 'h · stops buying after −' + Math.round(r.dailyLossLimit * 100) + '% in a day';
+  }
+
+  function drawChart(pts) {
+    var svg = $('chart');
+    if (pts.length < 2) { svg.innerHTML = '<text x="300" y="75" text-anchor="middle" fill="currentColor" opacity=".5" font-size="13">Not enough history yet</text>'; return; }
+    var min = Infinity, max = -Infinity;
+    pts.forEach(function (p) { min = Math.min(min, p.equity); max = Math.max(max, p.equity); });
+    if (max - min < 1e-6) { max += 1; min -= 1; }
+    var t0 = pts[0].ts, t1 = pts[pts.length - 1].ts;
+    var d = pts.map(function (p, i) {
+      var x = ((p.ts - t0) / (t1 - t0 || 1)) * 600;
+      var y = 130 - ((p.equity - min) / (max - min)) * 120;
+      return (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
+    }).join(' ');
+    var color = pts[pts.length - 1].equity >= pts[0].equity ? 'var(--up)' : 'var(--down)';
+    svg.innerHTML = '<path d="' + d + ' L600 140 L0 140 Z" fill="' + color + '" opacity=".12"/><path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="2" vector-effect="non-scaling-stroke"/>';
+  }
+
+  function refresh() { if (key) api('/api/state').then(render).catch(function () {}); }
+
+  function action(btn, path, body, confirmMsg) {
+    if (confirmMsg && !confirm(confirmMsg)) return;
+    btn.disabled = true;
+    api(path, 'POST', body).then(function (r) { if (r && r.error) alert(r.error); }).catch(function (e) { alert(e.message); })
+      .then(function () { btn.disabled = false; refresh(); });
+  }
+
+  $('go').onclick = function () {
+    key = $('pw').value;
+    try { localStorage.setItem(KEY, key); } catch (e) {}
+    refresh();
+  };
+  $('pw').onkeydown = function (e) { if (e.key === 'Enter') $('go').onclick(); };
+  $('runBtn').onclick = function () { action(this, '/api/run'); };
+  $('pauseBtn').onclick = function () { action(this, state && state.paused ? '/api/resume' : '/api/pause'); };
+  $('sellAllBtn').onclick = function () { action(this, '/api/sellall', null, 'Sell every open position now and pause the bot?'); };
+  $('resetBtn').onclick = function () { action(this, '/api/reset-paper', null, 'Wipe the paper account and start over?'); };
+  $('logoutBtn').onclick = function () { try { localStorage.removeItem(KEY); } catch (e) {} key = null; showLogin(''); };
+  $('positions').onclick = function (e) {
+    var mint = e.target.getAttribute && e.target.getAttribute('data-sell');
+    if (mint) action(e.target, '/api/sell', { mint: mint }, 'Sell this position now?');
+  };
+
+  if (key) refresh(); else showLogin('');
+  setInterval(refresh, 30000);
+})();
+</script>
+</body>
+</html>
