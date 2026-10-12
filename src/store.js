@@ -5,6 +5,17 @@ export class Store {
     this.db = db;
   }
 
+  async acquireCycleLock(now, ttlMs = 90000) {
+    const result = await this.db.prepare(`INSERT INTO state (k, v) VALUES ('lock', ?)
+      ON CONFLICT(k) DO UPDATE SET v = excluded.v WHERE CAST(state.v AS INTEGER) < ?`)
+      .bind(String(now), now - ttlMs).run();
+    return (result.meta?.changes ?? result.changes ?? 0) > 0;
+  }
+
+  async releaseCycleLock(owner) {
+    await this.db.prepare("DELETE FROM state WHERE k = 'lock' AND v = ?").bind(String(owner)).run();
+  }
+
   async get(k, def = null) {
     const row = await this.db.prepare('SELECT v FROM state WHERE k = ?').bind(k).first();
     return row ? JSON.parse(row.v) : def;
