@@ -6,6 +6,7 @@ import { Rpc } from './rpc.js';
 import { Store } from './store.js';
 import { loadKeypair, signTransaction } from './solana.js';
 import { loadConfig, safetyReject, entryScore, exitDecision, positionSize } from './strategy.js';
+import { adaptiveScore, learnOutcome } from './adaptive.js';
 
 const toUnits = (raw, decimals) => Number(BigInt(raw)) / 10 ** decimals;
 const fmt = (n) => `$${Number(n).toFixed(2)}`;
@@ -107,12 +108,21 @@ export async function sellPosition(ctx, pos, reason) {
   await adjustPaperCash(ctx, proceeds);
   await store.closePosition(mode, pos.mint);
   await store.addTrade({ mode, side: 'sell', mint: pos.mint, symbol: pos.symbol, usd: proceeds, qty_raw: qty.toString(), price, pnl_usd: pnl, reason, sig: r.sig });
+  if (!ctx.cfg.LIVE) {
+    const key = `v2_strategy_${pos.mint}`;
+    const strategy = await store.get(key);
+    if (strategy) {
+      const model = await store.get('v2_learning_paper', {});
+      await store.set('v2_learning_paper', learnOutcome(model, strategy, pnl));
+      await store.set(key, null);
+    }
+  }
   await store.setCooldown(mode, pos.mint, Date.now() + ctx.cfg.COOLDOWN_HOURS * 3600e3);
   await store.log('info', `SELL ${pos.symbol} ${fmt(proceeds)} (${reason}) P&L ${pnl >= 0 ? '+' : ''}${fmt(pnl)}`);
   return { ok: true, pnl };
 }
 
-async function buyToken(ctx, token, usd, score) {
+async function buyToken(ctx, token, usd, score, strategy = 'momentum') {
   const { store, mode } = ctx;
   const amountRaw = BigInt(Math.floor(usd * 10 ** USDC_DECIMALS)).toString();
   let r;
@@ -130,6 +140,7 @@ async function buyToken(ctx, token, usd, score) {
   const entry = cost / qty;
   await adjustPaperCash(ctx, -cost);
   await store.openPosition({ mode, mint: token.id, symbol: token.symbol, decimals: token.decimals, qty_raw: r.outRaw, cost_usd: cost, entry_price: entry, opened_at: Date.now(), buy_sig: r.sig });
+  if (!ctx.cfg.LIVE) await store.set(`v2_strategy_${token.id}`, strategy);
   await store.addTrade({ mode, side: 'buy', mint: token.id, symbol: token.symbol, usd: cost, qty_raw: r.outRaw, price: entry, reason: `momentum score ${score.toFixed(1)}`, sig: r.sig });
   await store.log('info', `BUY ${token.symbol} ${fmt(cost)} @ ${entry.toPrecision(4)} (1h ${token.stats1h.priceChange.toFixed(1)}%, organic ${Math.round(token.organicScore || 0)})`);
   return true;
@@ -149,14 +160,17 @@ async function findCandidates(ctx, heldMints) {
     for (const t of l.value || []) if (t?.id && !seen.has(t.id)) seen.set(t.id, t);
   }
   const out = [];
+  const model = await ctx.store.get('v2_learning_paper', {});
   const now = Date.now();
   for (const t of seen.values()) {
     if (heldMints.has(t.id)) continue;
     if (safetyReject(t, ctx.cfg, now)) continue;
     const score = entryScore(t, ctx.cfg);
+    const adaptive = !ctx.cfg.LIVE ? adaptiveScore(t, score, model) : null;
+    if (!ctx.cfg.LIVE && !adaptive) continue;
     if (score === null) continue;
     if (await ctx.store.cooldownActive(ctx.mode, t.id, now)) continue;
-    out.push({ token: t, score });
+    out.push({ token: t, score: adaptive?.score ?? score, strategy: adaptive?.strategy ?? 'momentum' });
   }
   out.sort((a, b) => b.score - a.score);
   return { scanned: seen.size, picks: out };
@@ -220,11 +234,11 @@ export async function runCycle(env, { forceScan = false } = {}) {
       scanned = n;
       let slots = cfg.MAX_POSITIONS - positions.length;
       let availableCash = cash;
-      for (const { token, score } of picks) {
+      for (const { token, score, strategy } of picks) {
         if (slots <= 0) break;
         const usd = positionSize(equity, availableCash, cfg);
         if (!usd) break;
-        if (await buyToken(ctx, token, usd, score)) {
+        if (await buyToken(ctx, token, usd, score, strategy)) {
           slots--;
           bought++;
           availableCash -= usd;
