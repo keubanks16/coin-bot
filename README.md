@@ -155,3 +155,5 @@ the public endpoint for balance checks.
 ## Adaptive paper trading v2
 
 The dashboard shows closed-paper-trade results by strategy, including win rate, realized P&L and smoothed learning confidence. Reset paper account also clears the adaptive model. The standard `npm test` command now includes adaptive strategy tests. This is a lightweight statistics model, not a pretrained AI or a guarantee of profitability. Keep `LIVE_TRADING = "false"` until thoroughly tested. GitHub branch `phantom-v2-paper-ai` may differ from `main`; reconcile branches before merging.
+
+<!-- Cloudflare redeploy trigger: 2026-10-12, adaptive v2 paper deployment -->
