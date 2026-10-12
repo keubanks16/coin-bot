@@ -157,3 +157,7 @@ the public endpoint for balance checks.
 The dashboard shows closed-paper-trade results by strategy, including win rate, realized P&L and smoothed learning confidence. Reset paper account also clears the adaptive model. The standard `npm test` command now includes adaptive strategy tests. This is a lightweight statistics model, not a pretrained AI or a guarantee of profitability. Keep `LIVE_TRADING = "false"` until thoroughly tested. GitHub branch `phantom-v2-paper-ai` may differ from `main`; reconcile branches before merging.
 
 <!-- Cloudflare redeploy trigger: 2026-10-12, adaptive v2 paper deployment -->
+
+## Fast paper monitoring
+
+Cloudflare cron runs discovery and buy decisions once per minute. A SQLite-backed Durable Object named `FastMonitor` uses an alarm to evaluate **existing paper positions only** about every 10 seconds. It is initialized by the next cron invocation after deployment. Alarms are best-effort and may be delayed. The dashboard also refreshes every 10 seconds, independently. `LIVE_TRADING` remains false; fast alarms deliberately do not trade live funds. Check Cloudflare deployments and GitHub Actions for a successful build before assuming the monitor is running. This does not guarantee profitability.
