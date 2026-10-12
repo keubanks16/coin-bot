@@ -132,7 +132,7 @@ export default {
   async scheduled(_event, env, ctx) {
     ctx.waitUntil((async () => {
       if (env.FAST_MONITOR && String(env.LIVE_TRADING).toLowerCase() !== 'true') {
-        await env.FAST_MONITOR.getByName('paper-monitor').start();
+        await env.FAST_MONITOR.get(env.FAST_MONITOR.idFromName('paper-monitor')).start();
       }
       await runCycle(env);
     })().catch(() => {}));
