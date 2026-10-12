@@ -85,6 +85,7 @@
 
   <div class="card"><h2>Equity · 7 days</h2><svg id="chart" viewBox="0 0 600 140" preserveAspectRatio="none"></svg></div>
 
+  <div class="card" id="aiCard"><h2>Adaptive strategy performance · paper</h2><div class="scroll" id="aiStats"></div><p class="note">Based on closed paper trades. Estimated confidence is not a prediction of future returns.</p></div>
   <div class="card"><h2>Open positions</h2><div class="scroll" id="positions"></div></div>
   <div class="card"><h2>Recent trades</h2><div class="scroll" id="trades"></div></div>
   <div class="card"><h2>Activity</h2><div class="log" id="events"></div></div>
@@ -132,7 +133,12 @@
     $('pauseBtn').textContent = s.paused ? 'Resume' : 'Pause';
     $('wallet').textContent = s.wallet ? s.wallet.slice(0, 4) + '…' + s.wallet.slice(-4) : '';
     $('resetBtn').hidden = s.mode !== 'paper';
-    $('note').textContent = s.lastScanNote || '';
+    $('note').textContent = (s.lastScanNote || '') + ' · Dashboard refreshes every 10 seconds; trading cycles run on the Cloudflare one-minute cron.';
+    $('aiCard').hidden = s.mode !== 'paper';
+    var ai = s.ai || {};
+    var aiHtml = '<table><tr><th>Strategy</th><th class="r">Trades</th><th class="r">Win rate</th><th class="r">Realized P&L</th><th class="r">Learning confidence</th></tr>';
+    ['scalp','momentum'].forEach(function (name) { var a = ai[name] || {}; var wins = a.wins || 0, losses = a.losses || 0, n = wins + losses; var net = a.net || 0; aiHtml += '<tr><td>' + name + '</td><td class="r">' + n + '</td><td class="r">' + (n ? (100*wins/n).toFixed(1)+'%' : '–') + '</td><td class="r ' + cls(net) + '">' + signed(net) + '</td><td class="r">' + (100*(wins+2)/(n+4)).toFixed(1) + '%</td></tr>'; });
+    $('aiStats').innerHTML = aiHtml + '</table>';
 
     $('equity').textContent = usd(s.equity);
     $('cash').textContent = usd(s.cash);
@@ -147,7 +153,7 @@
     drawChart(s.history || []);
 
     if (!s.positions.length) {
-      $('positions').innerHTML = '<div class="empty">No open positions. The bot scans every few minutes.</div>';
+      $('positions').innerHTML = '<div class="empty">No open positions. The bot scans for entries every minute when capacity allows.</div>';
     } else {
       var h = '<table><tr><th>Token</th><th class="r">Cost</th><th class="r">Value</th><th class="r">P&amp;L</th><th class="r">Held</th><th></th></tr>';
       s.positions.forEach(function (p) {
@@ -197,7 +203,8 @@
     svg.innerHTML = '<path d="' + d + ' L600 140 L0 140 Z" fill="' + color + '" opacity=".12"/><path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="2" vector-effect="non-scaling-stroke"/>';
   }
 
-  function refresh() { if (key) api('/api/state').then(render).catch(function () {}); }
+  var refreshing = false;
+  function refresh() { if (!key || refreshing || document.hidden) return; refreshing = true; api('/api/state').then(render).catch(function () {}).finally(function () { refreshing = false; }); }
 
   function action(btn, path, body, confirmMsg) {
     if (confirmMsg && !confirm(confirmMsg)) return;
@@ -223,7 +230,7 @@
   };
 
   if (key) refresh(); else showLogin('');
-  setInterval(refresh, 30000);
+  setInterval(refresh, 10000);
 })();
 </script>
 </body>
