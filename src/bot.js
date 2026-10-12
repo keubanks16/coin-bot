@@ -141,7 +141,7 @@ async function buyToken(ctx, token, usd, score, strategy = 'momentum') {
   await adjustPaperCash(ctx, -cost);
   await store.openPosition({ mode, mint: token.id, symbol: token.symbol, decimals: token.decimals, qty_raw: r.outRaw, cost_usd: cost, entry_price: entry, opened_at: Date.now(), buy_sig: r.sig });
   if (!ctx.cfg.LIVE) await store.set(`v2_strategy_${token.id}`, strategy);
-  await store.addTrade({ mode, side: 'buy', mint: token.id, symbol: token.symbol, usd: cost, qty_raw: r.outRaw, price: entry, reason: `momentum score ${score.toFixed(1)}`, sig: r.sig });
+  await store.addTrade({ mode, side: 'buy', mint: token.id, symbol: token.symbol, usd: cost, qty_raw: r.outRaw, price: entry, reason: `${strategy} score ${score.toFixed(1)}`, sig: r.sig });
   await store.log('info', `BUY ${token.symbol} ${fmt(cost)} @ ${entry.toPrecision(4)} (1h ${token.stats1h.priceChange.toFixed(1)}%, organic ${Math.round(token.organicScore || 0)})`);
   return true;
 }
@@ -193,7 +193,8 @@ export async function runCycle(env, { forceScan = false } = {}) {
     for (const pos of positions) {
       const price = prices[pos.mint];
       if (!price) continue;
-      const d = exitDecision(pos, price, cfg, now);
+      const strategy = !cfg.LIVE ? await store.get(`v2_strategy_${pos.mint}`, 'momentum') : 'momentum';
+      const d = exitDecision(pos, price, cfg, now, strategy);
       await store.updatePrice(mode, pos.mint, price, d.peak);
       if (d.sell) await sellPosition(ctx, pos, d.reason);
     }
