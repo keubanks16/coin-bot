@@ -113,9 +113,29 @@ async function handleApi(req, env, path) {
   }
 }
 
+export class FastMonitor {
+  constructor(state, env) { this.state = state; this.env = env; }
+  async start() {
+    if (!(await this.state.storage.getAlarm())) await this.state.storage.setAlarm(Date.now() + 10000);
+  }
+  async alarm() {
+    try {
+      // Paper-only: do not activate 10-second trading for live funds.
+      if (String(this.env.LIVE_TRADING).toLowerCase() !== 'true') await runCycle(this.env, { manageOnly: true });
+    } finally {
+      await this.state.storage.setAlarm(Date.now() + 10000);
+    }
+  }
+}
+
 export default {
   async scheduled(_event, env, ctx) {
-    ctx.waitUntil(runCycle(env).catch(() => {}));
+    ctx.waitUntil((async () => {
+      if (env.FAST_MONITOR && String(env.LIVE_TRADING).toLowerCase() !== 'true') {
+        await env.FAST_MONITOR.getByName('paper-monitor').start();
+      }
+      await runCycle(env);
+    })().catch(() => {}));
   },
 
   async fetch(req, env) {
