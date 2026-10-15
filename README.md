@@ -156,7 +156,7 @@ the public endpoint for balance checks.
 - `src/bot.js`: the trading cycle
 - `src/jupiter.js`: Jupiter Swap v2 / Price v3 / Tokens v2 client
 - `src/solana.js`: Phantom key loading and transaction signing (no dependencies)
-- `src/index.js`: cron handler, fast loop (Ticker Durable Object) and dashboard API
+- `src/index.js`: cron handler, fast loop (FastMonitor Durable Object) and dashboard API
 - `src/dashboard.html`: the dashboard
 - `test/`: offline tests (`npm test`)
 
