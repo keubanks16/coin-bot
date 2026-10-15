@@ -5,17 +5,6 @@ export class Store {
     this.db = db;
   }
 
-  async acquireCycleLock(now, ttlMs = 90000) {
-    const result = await this.db.prepare(`INSERT INTO state (k, v) VALUES ('lock', ?)
-      ON CONFLICT(k) DO UPDATE SET v = excluded.v WHERE CAST(state.v AS INTEGER) < ?`)
-      .bind(String(now), now - ttlMs).run();
-    return (result.meta?.changes ?? result.changes ?? 0) > 0;
-  }
-
-  async releaseCycleLock(owner) {
-    await this.db.prepare("DELETE FROM state WHERE k = 'lock' AND v = ?").bind(String(owner)).run();
-  }
-
   async get(k, def = null) {
     const row = await this.db.prepare('SELECT v FROM state WHERE k = ?').bind(k).first();
     return row ? JSON.parse(row.v) : def;
@@ -85,12 +74,23 @@ export class Store {
     return row?.pnl || 0;
   }
 
+  /** The most recent `n` closed trades (newest first). */
+  async recentSells(mode, n) {
+    const r = await this.db
+      .prepare("SELECT ts, pnl_usd FROM trades WHERE mode = ? AND side = 'sell' ORDER BY id DESC LIMIT ?")
+      .bind(mode, n)
+      .all();
+    return r.results || [];
+  }
+
   async stats(mode) {
     return this.db
       .prepare(
         `SELECT COUNT(*) AS sells,
                 COALESCE(SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END), 0) AS wins,
-                COALESCE(SUM(pnl_usd), 0) AS realized
+                COALESCE(SUM(pnl_usd), 0) AS realized,
+                COALESCE(SUM(CASE WHEN pnl_usd > 0 THEN pnl_usd ELSE 0 END), 0) AS gross_win,
+                COALESCE(SUM(CASE WHEN pnl_usd < 0 THEN -pnl_usd ELSE 0 END), 0) AS gross_loss
          FROM trades WHERE mode = ? AND side = 'sell'`,
       )
       .bind(mode)
@@ -132,7 +132,9 @@ export class Store {
       this.db.prepare("DELETE FROM trades WHERE mode = 'paper'"),
       this.db.prepare("DELETE FROM equity WHERE mode = 'paper'"),
       this.db.prepare("DELETE FROM cooldowns WHERE mode = 'paper'"),
-      this.db.prepare("DELETE FROM state WHERE k LIKE 'paper_%' OR k LIKE 'day_start_paper_%' OR k LIKE 'v2_strategy_%' OR k = 'v2_learning_paper' OR k = 'last_scan_paper'"),
+      this.db.prepare(
+        "DELETE FROM state WHERE k LIKE 'paper_%' OR k LIKE 'day_start_paper_%' OR k = 'v2_learning_paper' OR k LIKE 'v2_strategy_%' AND k NOT LIKE 'v2_strategy_live_%' OR k = 'last_equity_ts_paper'",
+      ),
     ]);
   }
 }

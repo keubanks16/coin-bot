@@ -7,10 +7,23 @@ export const SOL = 'So11111111111111111111111111111111111111112';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Shared across every client in this isolate, so all calls respect the key's rate limit.
+let nextSlot = 0;
+
 export class Jupiter {
   constructor(env) {
     this.base = (env.JUPITER_BASE_URL || 'https://api.jup.ag').replace(/\/$/, '');
     this.key = env.JUPITER_API_KEY || '';
+    const rps = Number(env.JUP_RPS) > 0 ? Number(env.JUP_RPS) : 1;
+    this.gapMs = Math.ceil(1000 / rps);
+  }
+
+  /** Space requests out to stay under the API key's requests-per-second budget. */
+  async throttle() {
+    const now = Date.now();
+    const at = Math.max(now, nextSlot);
+    nextSlot = at + this.gapMs;
+    if (at > now) await sleep(at - now);
   }
 
   headers(extra = {}) {
@@ -20,13 +33,11 @@ export class Jupiter {
   }
 
   async request(path, init = {}, attempt = 0) {
+    // /swap/v2/execute has its own, much larger bucket — don't make live fills wait in line.
+    if (!path.startsWith('/swap/v2/execute')) await this.throttle();
     const res = await fetch(this.base + path, { ...init, headers: this.headers(init.headers) });
     if (res.status === 429 && attempt < 2) {
-      const retryAfter = Number(res.headers.get('retry-after'));
-      const delay = Number.isFinite(retryAfter) && retryAfter > 0
-        ? Math.min(retryAfter * 1000, 15000)
-        : 2000 * (2 ** attempt);
-      await sleep(delay);
+      nextSlot = Math.max(nextSlot, Date.now() + 1000 * (attempt + 1));
       return this.request(path, init, attempt + 1);
     }
     const text = await res.text();

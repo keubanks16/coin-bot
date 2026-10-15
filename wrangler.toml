@@ -2,10 +2,12 @@ name = "phantom-alt-bot"
 main = "src/index.js"
 compatibility_date = "2026-10-01"
 
-# Run a cycle every minute (exits are checked every run, new entries every SCAN_EVERY_MIN).
+# The cron fires every minute and keeps the fast loop (the FastMonitor Durable Object) alive.
+# FastMonitor re-checks positions every TICK_SECONDS and scans for entries every SCAN_EVERY_SEC.
 [triggers]
 crons = ["* * * * *"]
 
+# Same class and migration the bot already runs on Cloudflare, so redeploys never recreate it.
 [[durable_objects.bindings]]
 name = "FAST_MONITOR"
 class_name = "FastMonitor"
@@ -27,26 +29,35 @@ database_id = "96bb9edb-44e5-453a-a54f-74dea3cd4960"
 [vars]
 # Paper trading until you flip this to "true" and redeploy.
 LIVE_TRADING = "false"
-SCAN_EVERY_MIN = "1"
 PAPER_START_USD = "1000"
 
-# Scalping exits (paper mode only); dashboard refresh is 10s, cron remains 1 minute.
-SCALP_STOP_LOSS_PCT = "0.035"
-SCALP_TAKE_PROFIT_PCT = "0.06"
-SCALP_TRAIL_ARM_PCT = "0.035"
-SCALP_TRAIL_PCT = "0.025"
-SCALP_MAX_HOLD_HOURS = "1"
+# "scalp" (fast in-and-out, default) or "momentum" (the original slower 1h swing strategy).
+STRATEGY = "scalp"
 
-# Risk settings (see src/strategy.js for every option and its default)
+# Speed. The free Jupiter key allows 1 request/sec, so these are tuned to stay inside it.
+# If you upgrade your Jupiter key, raise JUP_RPS (e.g. "10") and you can lower the others.
+TICK_SECONDS = "5"
+SCAN_EVERY_SEC = "30"
+JUP_RPS = "1"
+
+# Sizing and risk
 POSITION_PCT = "0.15"
 MAX_POSITIONS = "4"
 MAX_TRADE_USD = "250"
-STOP_LOSS_PCT = "0.08"
-TAKE_PROFIT_PCT = "0.25"
-TRAIL_ARM_PCT = "0.10"
-TRAIL_PCT = "0.06"
-MAX_HOLD_HOURS = "24"
-DAILY_LOSS_LIMIT_PCT = "0.08"
+DAILY_LOSS_LIMIT_PCT = "0.06"
+LOSS_STREAK_LIMIT = "4"
+LOSS_STREAK_PAUSE_MIN = "60"
+
+# Scalp exits (sold on whichever comes first)
+STOP_LOSS_PCT = "0.025"
+TAKE_PROFIT_PCT = "0.04"
+TRAIL_ARM_PCT = "0.015"
+TRAIL_PCT = "0.01"
+STALE_MINUTES = "15"
+MAX_HOLD_HOURS = "1"
+
+# Only trade tokens cheap enough to scalp: buying and selling right back must cost <= 0.8%.
+MAX_ROUNDTRIP_COST_PCT = "0.008"
 
 # Optional: a paid/dedicated RPC is more reliable than the public one in live mode
 # SOLANA_RPC_URL = "https://mainnet.helius-rpc.com/?api-key=..."

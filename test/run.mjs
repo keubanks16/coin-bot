@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { b58encode, b58decode, b64encode, b64decode, loadKeypair, signTransaction } from '../src/solana.js';
-import { loadConfig, safetyReject, entryScore, exitDecision, positionSize } from '../src/strategy.js';
+import { loadConfig, safetyReject, entryScore, exitDecision, positionSize, costReject } from '../src/strategy.js';
 import { runCycle } from '../src/bot.js';
 import { USDC } from '../src/jupiter.js';
 
@@ -65,7 +65,7 @@ function goodToken(over = {}) {
     tags: ['verified'],
     firstPool: { createdAt: new Date(Date.now() - 30 * 24 * HOUR).toISOString() },
     audit: { mintAuthorityDisabled: true, freezeAuthorityDisabled: true, topHoldersPercentage: 18 },
-    stats5m: { priceChange: 1.2 },
+    stats5m: { priceChange: 1.2, buyVolume: 40000, sellVolume: 20000, buyOrganicVolume: 15000, sellOrganicVolume: 8000, numNetBuyers: 30 },
     stats1h: { priceChange: 9, buyVolume: 400000, sellVolume: 250000, buyOrganicVolume: 90000, sellOrganicVolume: 50000, numNetBuyers: 120 },
     ...over,
   };
@@ -121,22 +121,51 @@ await test('safety filter', () => {
   assert.equal(safetyReject(goodToken({ id: USDC }), cfg), 'excluded');
 });
 
-await test('entry signal', () => {
+await test('scalp entry signal', () => {
+  assert.equal(cfg.STRATEGY, 'scalp');
   assert.ok(entryScore(goodToken(), cfg) > 0);
   assert.equal(entryScore(goodToken({ stats1h: { ...goodToken().stats1h, priceChange: 60 } }), cfg), null, 'too extended');
-  assert.equal(entryScore(goodToken({ stats5m: { priceChange: -1 } }), cfg), null, 'falling now');
-  assert.equal(entryScore(goodToken({ stats1h: { ...goodToken().stats1h, buyOrganicVolume: 10, sellOrganicVolume: 100 } }), cfg), null, 'sellers dominate');
+  assert.equal(entryScore(goodToken({ stats5m: { ...goodToken().stats5m, priceChange: -1 } }), cfg), null, 'falling now');
+  assert.equal(entryScore(goodToken({ stats5m: { ...goodToken().stats5m, priceChange: 9 } }), cfg), null, 'vertical spike');
+  assert.equal(entryScore(goodToken({ stats5m: { ...goodToken().stats5m, buyOrganicVolume: 10, sellOrganicVolume: 100 } }), cfg), null, 'sellers dominate 5m');
+  assert.equal(entryScore(goodToken({ stats5m: { ...goodToken().stats5m, buyVolume: 1000, sellVolume: 1000 } }), cfg), null, 'no 5m volume');
 });
 
-await test('exit rules', () => {
+const mcfg = loadConfig({ STRATEGY: 'momentum' });
+await test('momentum entry signal still works', () => {
+  assert.equal(mcfg.STRATEGY, 'momentum');
+  assert.ok(entryScore(goodToken(), mcfg) > 0);
+  assert.equal(entryScore(goodToken({ stats1h: { ...goodToken().stats1h, buyOrganicVolume: 10, sellOrganicVolume: 100 } }), mcfg), null, 'sellers dominate 1h');
+});
+
+await test('round-trip cost check', () => {
+  assert.equal(costReject(100, 99.6, cfg), null, '0.4% is fine');
+  assert.match(costReject(100, 98.5, cfg), /too high/);
+  assert.match(costReject(100, 0, cfg), /no route/);
+  assert.match(costReject(100, 99.4, loadConfig({ TAKE_PROFIT_PCT: '0.01' })), /take profit too small/);
+});
+
+await test('scalp exit rules', () => {
+  const now = Date.now();
+  const pos = { entry_price: 1, peak_price: 1, opened_at: now - 5 * 60e3 };
+  assert.equal(exitDecision(pos, 0.97, cfg, now).reason, 'stop loss');
+  assert.equal(exitDecision(pos, 1.05, cfg, now).reason, 'take profit');
+  assert.equal(exitDecision({ ...pos, peak_price: 1.03 }, 1.019, cfg, now).reason, 'trailing stop');
+  assert.equal(exitDecision({ ...pos, peak_price: 1.03 }, 1.025, cfg, now).sell, false);
+  assert.equal(exitDecision({ ...pos, opened_at: now - 16 * 60e3 }, 1.002, cfg, now).reason, 'no momentum');
+  assert.equal(exitDecision({ ...pos, opened_at: now - 16 * 60e3 }, 1.01, cfg, now).sell, false);
+  assert.equal(exitDecision({ ...pos, opened_at: now - 61 * 60e3 }, 1.01, cfg, now).reason, 'max hold time');
+  assert.equal(exitDecision(pos, 1.005, cfg, now).sell, false);
+});
+
+await test('momentum exit rules', () => {
   const now = Date.now();
   const pos = { entry_price: 1, peak_price: 1, opened_at: now - HOUR };
-  assert.equal(exitDecision(pos, 0.91, cfg, now).reason, 'stop loss');
-  assert.equal(exitDecision(pos, 1.3, cfg, now).reason, 'take profit');
-  assert.equal(exitDecision({ ...pos, peak_price: 1.15 }, 1.07, cfg, now).reason, 'trailing stop');
-  assert.equal(exitDecision({ ...pos, peak_price: 1.15 }, 1.12, cfg, now).sell, false);
-  assert.equal(exitDecision({ ...pos, opened_at: now - 25 * HOUR }, 1.01, cfg, now).reason, 'max hold time');
-  assert.equal(exitDecision(pos, 1.02, cfg, now).sell, false);
+  assert.equal(exitDecision(pos, 0.91, mcfg, now).reason, 'stop loss');
+  assert.equal(exitDecision(pos, 1.3, mcfg, now).reason, 'take profit');
+  assert.equal(exitDecision({ ...pos, peak_price: 1.15 }, 1.07, mcfg, now).reason, 'trailing stop');
+  assert.equal(exitDecision({ ...pos, peak_price: 1.15 }, 1.12, mcfg, now).sell, false);
+  assert.equal(exitDecision({ ...pos, opened_at: now - 25 * HOUR }, 1.01, mcfg, now).reason, 'max hold time');
 });
 
 await test('position sizing', () => {
@@ -163,7 +192,7 @@ function installMock(market) {
       const amt = Number(u.searchParams.get('amount'));
       // USDC (6dp) <-> token (6dp) at the token's current price
       const p = market.prices[inMint === USDC ? outMint : inMint];
-      const out = inMint === USDC ? Math.floor(amt / p) : Math.floor(amt * p);
+      const out = inMint === USDC ? Math.floor(amt / p) : Math.floor(amt * p * (1 - (market.spread || 0)));
       const o = { requestId: 'req-' + market.calls.length, outAmount: String(out), router: 'metis' };
       if (u.searchParams.get('taker')) {
         o.transaction = fakeV0Tx([market.walletPub]).b64;
@@ -202,7 +231,7 @@ await test('buys the good token, skips the junk, then takes profit', async () =>
   const DB = makeD1();
   const market = { calls: [], tokens: [good, junk], prices: { [good.id]: 0.5, [junk.id]: 1 } };
   installMock(market);
-  const env = { DB, JUPITER_API_KEY: 'k' };
+  const env = { DB, JUPITER_API_KEY: 'k', JUP_RPS: '1000' };
 
   const r1 = await runCycle(env, { forceScan: true });
   assert.equal(r1.bought, 1);
@@ -230,7 +259,7 @@ await test('stop loss and daily loss limit', async () => {
   const DB = makeD1();
   const market = { calls: [], tokens: [good], prices: { [good.id]: 0.5 } };
   installMock(market);
-  const env = { DB, JUPITER_API_KEY: 'k', POSITION_PCT: '1', MAX_TRADE_USD: '2000', MAX_POSITIONS: '1' };
+  const env = { DB, JUPITER_API_KEY: 'k', JUP_RPS: '1000', POSITION_PCT: '1', MAX_TRADE_USD: '2000', MAX_POSITIONS: '1' };
   await runCycle(env, { forceScan: true });
   market.prices[good.id] = 0.4; // -20%
   await runCycle(env);
@@ -240,11 +269,30 @@ await test('stop loss and daily loss limit', async () => {
   assert.match(events, /Daily loss limit hit/);
 });
 
+await test('skips tokens that are too expensive to round-trip', async () => {
+  const DB = makeD1();
+  installMock({ calls: [], tokens: [good], prices: { [good.id]: 0.5 }, spread: 0.02 });
+  const r = await runCycle({ DB, JUP_RPS: '1000' }, { forceScan: true });
+  assert.equal(r.bought, 0);
+  const events = DB.raw.prepare('SELECT msg FROM events').all().map((e) => e.msg).join('\n');
+  assert.match(events, /Skip GOOD: round-trip cost 2\.00% too high/);
+});
+
+await test('losing streak pauses new buys', async () => {
+  const DB = makeD1();
+  installMock({ calls: [], tokens: [good], prices: { [good.id]: 0.5 } });
+  const ins = DB.raw.prepare("INSERT INTO trades (ts, mode, side, mint, symbol, usd, pnl_usd) VALUES (?, 'paper', 'sell', 'x', 'X', 10, -1)");
+  for (let i = 0; i < 4; i++) ins.run(Date.now() - 60e3);
+  const r = await runCycle({ DB, JUP_RPS: '1000' }, { forceScan: true });
+  assert.equal(r.bought, 0);
+  assert.equal(r.cooling, true);
+});
+
 await test('pause stops new buys', async () => {
   const DB = makeD1();
   installMock({ calls: [], tokens: [good], prices: { [good.id]: 0.5 } });
   DB.raw.prepare("INSERT INTO state (k, v) VALUES ('paused', 'true')").run();
-  const r = await runCycle({ DB }, { forceScan: true });
+  const r = await runCycle({ DB, JUP_RPS: '1000' }, { forceScan: true });
   assert.equal(r.bought, 0);
 });
 
@@ -258,7 +306,7 @@ await test('signs and executes real-mode swaps', async () => {
     balances: { [USDC]: 500_000_000 }, // $500
   };
   installMock(market);
-  const env = { DB, JUPITER_API_KEY: 'k', LIVE_TRADING: 'true', WALLET_PRIVATE_KEY: w.secret };
+  const env = { DB, JUPITER_API_KEY: 'k', JUP_RPS: '1000', LIVE_TRADING: 'true', WALLET_PRIVATE_KEY: w.secret };
   const r = await runCycle(env, { forceScan: true });
   assert.equal(r.mode, 'live');
   assert.equal(r.bought, 1);
