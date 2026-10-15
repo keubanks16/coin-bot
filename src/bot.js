@@ -1,16 +1,19 @@
-// One trading cycle: value and manage open positions, then (every few minutes)
-// scan Jupiter's trending tokens for new entries.
+// One trading cycle: value and manage open positions (every tick, every few seconds), then
+// (every SCAN_EVERY_SEC) scan Jupiter's trending tokens for new entries.
 
 import { Jupiter, USDC, USDC_DECIMALS } from './jupiter.js';
 import { Rpc } from './rpc.js';
 import { Store } from './store.js';
 import { loadKeypair, signTransaction } from './solana.js';
-import { loadConfig, safetyReject, entryScore, exitDecision, positionSize } from './strategy.js';
-import { adaptiveScore, learnOutcome } from './adaptive.js';
+import { loadConfig, safetyReject, entryScore, exitDecision, positionSize, costReject } from './strategy.js';
+import { adaptiveFactor, learnOutcome } from './adaptive.js';
 
 const toUnits = (raw, decimals) => Number(BigInt(raw)) / 10 ** decimals;
 const fmt = (n) => `$${Number(n).toFixed(2)}`;
 const dayKey = (mode, now) => `day_start_${mode}_${new Date(now).toISOString().slice(0, 10)}`;
+const learnKey = (mode) => `v2_learning_${mode}`;
+const stratKey = (mode, mint) => (mode === 'paper' ? `v2_strategy_${mint}` : `v2_strategy_live_${mint}`);
+const LOCK_STALE_MS = 60e3;
 
 export async function makeContext(env) {
   const cfg = loadConfig(env);
@@ -19,16 +22,20 @@ export async function makeContext(env) {
   return ctx;
 }
 
-/** Swap through Jupiter. Paper mode prices the trade with a real quote but sends nothing. */
-async function swap(ctx, inputMint, outputMint, amountRaw) {
+/** Get a Jupiter order (quote, plus an unsigned transaction in live mode). */
+function getOrder(ctx, inputMint, outputMint, amountRaw) {
+  const taker = ctx.cfg.LIVE ? ctx.wallet.publicKey : undefined;
+  return ctx.jup.order({ inputMint, outputMint, amount: amountRaw, taker });
+}
+
+/** Fill an order. Paper mode uses the real quote with a haircut and sends nothing. */
+async function fillOrder(ctx, o, amountRaw) {
   const { jup, cfg } = ctx;
+  if (!o.outAmount || o.outAmount === '0') return { ok: false, error: 'no route' };
   if (!cfg.LIVE) {
-    const o = await jup.order({ inputMint, outputMint, amount: amountRaw });
-    if (!o.outAmount || o.outAmount === '0') return { ok: false, error: 'no route' };
     const out = (BigInt(o.outAmount) * BigInt(10000 - cfg.PAPER_SLIPPAGE_BPS)) / 10000n;
     return { ok: true, inRaw: String(amountRaw), outRaw: out.toString(), sig: null };
   }
-  const o = await jup.order({ inputMint, outputMint, amount: amountRaw, taker: ctx.wallet.publicKey });
   if (!o.transaction) {
     return { ok: false, error: `order not buildable (${o.router || '?'} code ${o.errorCode ?? '?'}: ${o.errorMessage || 'no transaction'})` };
   }
@@ -38,6 +45,10 @@ async function swap(ctx, inputMint, outputMint, amountRaw) {
     return { ok: false, error: `execute failed (code ${r.code}${r.error ? `: ${r.error}` : ''})`, sig: r.signature };
   }
   return { ok: true, inRaw: r.totalInputAmount, outRaw: r.totalOutputAmount, sig: r.signature };
+}
+
+async function swap(ctx, inputMint, outputMint, amountRaw) {
+  return fillOrder(ctx, await getOrder(ctx, inputMint, outputMint, amountRaw), amountRaw);
 }
 
 async function getCash(ctx) {
@@ -52,7 +63,7 @@ async function adjustPaperCash(ctx, delta) {
   await ctx.store.set('paper_cash', Math.round((cash + delta) * 1e6) / 1e6);
 }
 
-/** Current USD price for each open position (Price API, falling back to a sell quote). */
+/** Current USD price for each open position (one batched Price API call, falling back to a sell quote). */
 async function priceOpenPositions(ctx, positions) {
   const prices = {};
   if (!positions.length) return prices;
@@ -108,26 +119,38 @@ export async function sellPosition(ctx, pos, reason) {
   await adjustPaperCash(ctx, proceeds);
   await store.closePosition(mode, pos.mint);
   await store.addTrade({ mode, side: 'sell', mint: pos.mint, symbol: pos.symbol, usd: proceeds, qty_raw: qty.toString(), price, pnl_usd: pnl, reason, sig: r.sig });
-  if (!ctx.cfg.LIVE) {
-    const key = `v2_strategy_${pos.mint}`;
-    const strategy = await store.get(key);
-    if (strategy) {
-      const model = await store.get('v2_learning_paper', {});
-      await store.set('v2_learning_paper', learnOutcome(model, strategy, pnl));
-      await store.set(key, null);
-    }
+  const sk = stratKey(mode, pos.mint);
+  const strategy = await store.get(sk);
+  if (strategy) {
+    const model = await store.get(learnKey(mode), {});
+    await store.set(learnKey(mode), learnOutcome(model, strategy, pnl));
+    await store.set(sk, null);
   }
   await store.setCooldown(mode, pos.mint, Date.now() + ctx.cfg.COOLDOWN_HOURS * 3600e3);
-  await store.log('info', `SELL ${pos.symbol} ${fmt(proceeds)} (${reason}) P&L ${pnl >= 0 ? '+' : ''}${fmt(pnl)}`);
+  const held = Math.round((Date.now() - pos.opened_at) / 60e3);
+  await store.log('info', `SELL ${pos.symbol} ${fmt(proceeds)} (${reason}, held ${held}m) P&L ${pnl >= 0 ? '+' : ''}${fmt(pnl)}`);
   return { ok: true, pnl };
 }
 
-async function buyToken(ctx, token, usd, score, strategy = 'momentum') {
-  const { store, mode } = ctx;
+/** Buy only if buying and immediately selling back would cost less than the configured limit. */
+async function buyToken(ctx, token, usd, score) {
+  const { store, mode, cfg, jup } = ctx;
   const amountRaw = BigInt(Math.floor(usd * 10 ** USDC_DECIMALS)).toString();
   let r;
   try {
-    r = await swap(ctx, USDC, token.id, amountRaw);
+    const o = await getOrder(ctx, USDC, token.id, amountRaw);
+    if (!o.outAmount || o.outAmount === '0') {
+      r = { ok: false, error: 'no route' };
+    } else {
+      const back = await jup.order({ inputMint: token.id, outputMint: USDC, amount: o.outAmount });
+      const reject = costReject(usd, toUnits(back.outAmount || '0', USDC_DECIMALS), cfg);
+      if (reject) {
+        await store.setCooldown(mode, token.id, Date.now() + 10 * 60e3);
+        await store.log('info', `Skip ${token.symbol}: ${reject}`);
+        return false;
+      }
+      r = await fillOrder(ctx, o, amountRaw);
+    }
   } catch (e) {
     r = { ok: false, error: e.message };
   }
@@ -140,16 +163,19 @@ async function buyToken(ctx, token, usd, score, strategy = 'momentum') {
   const entry = cost / qty;
   await adjustPaperCash(ctx, -cost);
   await store.openPosition({ mode, mint: token.id, symbol: token.symbol, decimals: token.decimals, qty_raw: r.outRaw, cost_usd: cost, entry_price: entry, opened_at: Date.now(), buy_sig: r.sig });
-  if (!ctx.cfg.LIVE) await store.set(`v2_strategy_${token.id}`, strategy);
-  await store.addTrade({ mode, side: 'buy', mint: token.id, symbol: token.symbol, usd: cost, qty_raw: r.outRaw, price: entry, reason: `${strategy} score ${score.toFixed(1)}`, sig: r.sig });
-  await store.log('info', `BUY ${token.symbol} ${fmt(cost)} @ ${entry.toPrecision(4)} (1h ${token.stats1h.priceChange.toFixed(1)}%, organic ${Math.round(token.organicScore || 0)})`);
+  await store.set(stratKey(mode, token.id), cfg.STRATEGY);
+  await store.addTrade({ mode, side: 'buy', mint: token.id, symbol: token.symbol, usd: cost, qty_raw: r.outRaw, price: entry, reason: `${cfg.STRATEGY} score ${score.toFixed(1)}`, sig: r.sig });
+  const m5 = token.stats5m?.priceChange ?? 0;
+  const h1 = token.stats1h?.priceChange ?? 0;
+  await store.log('info', `BUY ${token.symbol} ${fmt(cost)} @ ${entry.toPrecision(4)} (5m ${m5.toFixed(1)}%, 1h ${h1.toFixed(1)}%, organic ${Math.round(token.organicScore || 0)})`);
   return true;
 }
 
 async function findCandidates(ctx, heldMints) {
+  const iv = ctx.cfg.SCAN_INTERVAL_NAME;
   const lists = await Promise.allSettled([
-    ctx.jup.category('toptrending', '1h', 100),
-    ctx.jup.category('toptraded', '1h', 100),
+    ctx.jup.category('toptrending', iv, 100),
+    ctx.jup.category('toptraded', iv, 100),
   ]);
   const seen = new Map();
   for (const l of lists) {
@@ -160,32 +186,46 @@ async function findCandidates(ctx, heldMints) {
     for (const t of l.value || []) if (t?.id && !seen.has(t.id)) seen.set(t.id, t);
   }
   const out = [];
-  const rejects = {};
-  const reject = (reason) => { rejects[reason] = (rejects[reason] || 0) + 1; };
-  const model = await ctx.store.get('v2_learning_paper', {});
+  // Same rules in paper and live, so paper results predict live results.
+  const factor = adaptiveFactor(await ctx.store.get(learnKey(ctx.mode), {}), ctx.cfg.STRATEGY);
   const now = Date.now();
   for (const t of seen.values()) {
-    if (heldMints.has(t.id)) { reject('Already held'); continue; }
-    const unsafe = safetyReject(t, ctx.cfg, now);
-    if (unsafe) { reject(unsafe); continue; }
+    if (heldMints.has(t.id)) continue;
+    if (safetyReject(t, ctx.cfg, now)) continue;
     const score = entryScore(t, ctx.cfg);
-    if (score === null) { reject('Entry momentum / volume criteria'); continue; }
-    const adaptive = !ctx.cfg.LIVE ? adaptiveScore(t, score, model) : null;
-    if (!ctx.cfg.LIVE && !adaptive) { reject('Adaptive market pattern'); continue; }
-    if (await ctx.store.cooldownActive(ctx.mode, t.id, now)) { reject('Cooldown'); continue; }
-    out.push({ token: t, score: adaptive?.score ?? score, strategy: adaptive?.strategy ?? 'momentum' });
+    if (score === null) continue;
+    if (await ctx.store.cooldownActive(ctx.mode, t.id, now)) continue;
+    out.push({ token: t, score: score * factor });
   }
   out.sort((a, b) => b.score - a.score);
-  return { scanned: seen.size, picks: out, rejects };
+  return { scanned: seen.size, picks: out };
+}
+
+/** True while a losing streak should keep the bot from opening new trades. */
+async function lossStreakActive(ctx, now) {
+  const n = ctx.cfg.LOSS_STREAK_LIMIT;
+  if (!(n > 0)) return false;
+  const recent = await ctx.store.recentSells(ctx.mode, n);
+  if (recent.length < n || recent.some((t) => (t.pnl_usd || 0) > 0)) return false;
+  const until = recent[0].ts + ctx.cfg.LOSS_STREAK_PAUSE_MIN * 60e3;
+  if (now >= until) return false;
+  const key = `streak_logged_${ctx.mode}_${recent[0].ts}`;
+  if (!(await ctx.store.get(key))) {
+    await ctx.store.set(key, true);
+    await ctx.store.log('warn', `${n} losing trades in a row. No new buys for ${ctx.cfg.LOSS_STREAK_PAUSE_MIN} minutes.`);
+  }
+  return true;
 }
 
 /** Run one cycle. Returns a short summary object. */
-export async function runCycle(env, { forceScan = false, manageOnly = false } = {}) {
+export async function runCycle(env, { forceScan = false } = {}) {
   const ctx = await makeContext(env);
   const { store, cfg, mode } = ctx;
   const now = Date.now();
 
-  if (!(await store.acquireCycleLock(now))) return { skipped: 'another cycle is running' };
+  const lock = await store.get('lock', 0);
+  if (now - lock < LOCK_STALE_MS) return { skipped: 'another cycle is running' };
+  await store.set('lock', now);
 
   try {
     // 1) Manage open positions.
@@ -194,10 +234,9 @@ export async function runCycle(env, { forceScan = false, manageOnly = false } = 
     for (const pos of positions) {
       const price = prices[pos.mint];
       if (!price) continue;
-      const strategy = !cfg.LIVE ? await store.get(`v2_strategy_${pos.mint}`, 'momentum') : 'momentum';
-      const d = exitDecision(pos, price, cfg, now, strategy);
-      await store.updatePrice(mode, pos.mint, price, d.peak);
+      const d = exitDecision(pos, price, cfg, now);
       if (d.sell) await sellPosition(ctx, pos, d.reason);
+      else if (price !== pos.last_price || d.peak !== pos.peak_price) await store.updatePrice(mode, pos.mint, price, d.peak);
     }
 
     // 2) Equity and daily loss guard.
@@ -205,7 +244,11 @@ export async function runCycle(env, { forceScan = false, manageOnly = false } = 
     const cash = await getCash(ctx);
     const held = positions.reduce((s, p) => s + toUnits(p.qty_raw, p.decimals) * (prices[p.mint] || p.last_price || p.entry_price), 0);
     const equity = cash + held;
-    await store.recordEquity(mode, equity);
+    const eqKey = `last_equity_ts_${mode}`;
+    if (now - (await store.get(eqKey, 0)) >= 60e3) {
+      await store.recordEquity(mode, equity);
+      await store.set(eqKey, now);
+    }
 
     const dk = dayKey(mode, now);
     let dayStart = await store.get(dk);
@@ -223,25 +266,28 @@ export async function runCycle(env, { forceScan = false, manageOnly = false } = 
     // 3) Scan for entries.
     const paused = await store.get('paused', false);
     const lastScan = await store.get(`last_scan_${mode}`, 0);
-    const scanDue = forceScan || now - lastScan >= cfg.SCAN_EVERY_MIN * 60e3 - 15e3;
+    const scanDue = forceScan || now - lastScan >= cfg.SCAN_EVERY_SEC * 1000 - 2e3;
     let bought = 0;
     let scanned = 0;
-    if (!manageOnly && !paused && !halted && scanDue && positions.length < cfg.MAX_POSITIONS) {
+    let cooling = false;
+    if (!paused && !halted && scanDue && positions.length < cfg.MAX_POSITIONS) {
       await store.set(`last_scan_${mode}`, now);
+      cooling = await lossStreakActive(ctx, now);
+    }
+    if (!paused && !halted && !cooling && scanDue && positions.length < cfg.MAX_POSITIONS) {
       if (cfg.LIVE) {
         const sol = await ctx.rpc.solBalance(ctx.wallet.publicKey);
         if (sol < 0.005) await store.log('warn', `Low SOL for fees (${sol.toFixed(4)} SOL). Buys may fail unless Jupiter sponsors gas.`);
       }
-      const { scanned: n, picks, rejects } = await findCandidates(ctx, new Set(positions.map((p) => p.mint)));
-      await store.set(`last_scan_details_${mode}`, { at: now, scanned: n, eligible: picks.length, rejects });
+      const { scanned: n, picks } = await findCandidates(ctx, new Set(positions.map((p) => p.mint)));
       scanned = n;
       let slots = cfg.MAX_POSITIONS - positions.length;
       let availableCash = cash;
-      for (const { token, score, strategy } of picks) {
+      for (const { token, score } of picks.slice(0, slots + 2)) {
         if (slots <= 0) break;
         const usd = positionSize(equity, availableCash, cfg);
         if (!usd) break;
-        if (await buyToken(ctx, token, usd, score, strategy)) {
+        if (await buyToken(ctx, token, usd, score)) {
           slots--;
           bought++;
           availableCash -= usd;
@@ -250,12 +296,11 @@ export async function runCycle(env, { forceScan = false, manageOnly = false } = 
       if (!picks.length) await store.set('last_scan_note', `${new Date(now).toISOString()}: scanned ${n} tokens, none passed filters`);
     }
 
-    await store.set(manageOnly ? 'last_fast_check_paper' : `last_cycle_${mode}`, Date.now());
-    return { mode, equity, cash, positions: positions.length, bought, scanned, paused, halted };
+    return { mode, equity, cash, positions: positions.length, bought, scanned, paused, halted, cooling };
   } catch (e) {
     await store.log('error', `Cycle error: ${e.message}`);
     throw e;
   } finally {
-    await store.releaseCycleLock(now);
+    await store.set('lock', 0);
   }
 }

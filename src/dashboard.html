@@ -83,11 +83,8 @@
     <div class="tile"><div class="k">Win rate</div><div class="v" id="winrate">–</div></div>
   </div>
 
-  <div class="card"><h2>Bot monitoring</h2><div id="monitorStatus" class="rules"></div></div>
-  <div class="card"><h2>Coin scan diagnostics</h2><div id="scanDiagnostics" class="rules"></div></div>
   <div class="card"><h2>Equity · 7 days</h2><svg id="chart" viewBox="0 0 600 140" preserveAspectRatio="none"></svg></div>
 
-  <div class="card" id="aiCard"><h2>Adaptive strategy performance · paper</h2><div class="scroll" id="aiStats"></div><p class="note">Based on closed paper trades. Estimated confidence is not a prediction of future returns.</p></div>
   <div class="card"><h2>Open positions</h2><div class="scroll" id="positions"></div></div>
   <div class="card"><h2>Recent trades</h2><div class="scroll" id="trades"></div></div>
   <div class="card"><h2>Activity</h2><div class="log" id="events"></div></div>
@@ -135,16 +132,7 @@
     $('pauseBtn').textContent = s.paused ? 'Resume' : 'Pause';
     $('wallet').textContent = s.wallet ? s.wallet.slice(0, 4) + '…' + s.wallet.slice(-4) : '';
     $('resetBtn').hidden = s.mode !== 'paper';
-    $('note').textContent = (s.lastScanNote || '') + ' · Dashboard refreshes every 10 seconds; discovery runs every minute; paper exits target every 10 seconds.';
-    function status(ts, interval) { if (!ts) return 'Not recorded'; var seconds = Math.max(0, Math.round((Date.now()-ts)/1000)); return new Date(ts).toLocaleTimeString() + ' (' + seconds + 's ago)' + (seconds > interval*3 ? ' — delayed' : ''); }
-    $('monitorStatus').textContent = 'Last trading cycle: ' + status(s.lastCycleAt, 60) + ' · Last fast paper check: ' + status(s.lastFastCheckAt, 10) + ' · Dashboard refreshed: ' + new Date().toLocaleTimeString();
-    var details = s.scanDetails;
-    if (details) { var reasons = Object.entries(details.rejects || {}).sort(function(a,b){return b[1]-a[1];}); $('scanDiagnostics').innerHTML = 'Last scan: ' + esc(new Date(details.at).toLocaleTimeString()) + ' · ' + details.scanned + ' discovered · ' + details.eligible + ' eligible' + (reasons.length ? '<table><tr><th>Rejection reason</th><th class="r">Tokens</th></tr>' + reasons.map(function(x){return '<tr><td>' + esc(x[0]) + '</td><td class="r">' + x[1] + '</td></tr>';}).join('') + '</table>' : ''); } else { $('scanDiagnostics').textContent = 'Waiting for a discovery scan.'; }
-    $('aiCard').hidden = s.mode !== 'paper';
-    var ai = s.ai || {};
-    var aiHtml = '<table><tr><th>Strategy</th><th class="r">Trades</th><th class="r">Win rate</th><th class="r">Realized P&L</th><th class="r">Learning confidence</th></tr>';
-    ['scalp','momentum'].forEach(function (name) { var a = ai[name] || {}; var wins = a.wins || 0, losses = a.losses || 0, n = wins + losses; var net = a.net || 0; aiHtml += '<tr><td>' + name + '</td><td class="r">' + n + '</td><td class="r">' + (n ? (100*wins/n).toFixed(1)+'%' : '–') + '</td><td class="r ' + cls(net) + '">' + signed(net) + '</td><td class="r">' + (100*(wins+2)/(n+4)).toFixed(1) + '%</td></tr>'; });
-    $('aiStats').innerHTML = aiHtml + '</table>';
+    $('note').textContent = s.lastScanNote || '';
 
     $('equity').textContent = usd(s.equity);
     $('cash').textContent = usd(s.cash);
@@ -154,12 +142,13 @@
     $('total').textContent = signed(total);
     $('total').className = 'v ' + cls(total);
     var st = s.stats || {};
-    $('winrate').textContent = st.sells ? Math.round(100 * st.wins / st.sells) + '% (' + st.sells + ')' : '–';
+    var pf = st.gross_loss > 0 ? ' · PF ' + (st.gross_win / st.gross_loss).toFixed(2) : '';
+    $('winrate').textContent = st.sells ? Math.round(100 * st.wins / st.sells) + '% (' + st.sells + ')' + pf : '–';
 
     drawChart(s.history || []);
 
     if (!s.positions.length) {
-      $('positions').innerHTML = '<div class="empty">No open positions. The bot scans for entries every minute when capacity allows.</div>';
+      $('positions').innerHTML = '<div class="empty">No open positions. The bot scans every few seconds.</div>';
     } else {
       var h = '<table><tr><th>Token</th><th class="r">Cost</th><th class="r">Value</th><th class="r">P&amp;L</th><th class="r">Held</th><th></th></tr>';
       s.positions.forEach(function (p) {
@@ -188,9 +177,13 @@
     }).join('') : '<div class="empty">Nothing yet.</div>';
 
     var r = s.rules;
-    $('rules').innerHTML = '<b>Rules</b> · up to ' + r.maxPositions + ' positions, ' + Math.round(r.positionPct * 100) + '% of equity each (max ' + usd(r.maxTrade) +
-      ') · stop loss −' + Math.round(r.stopLoss * 100) + '% · take profit +' + Math.round(r.takeProfit * 100) + '% · trailing stop ' + Math.round(r.trail * 100) +
-      '% after +' + Math.round(r.trailArm * 100) + '% · max hold ' + r.maxHoldHours + 'h · stops buying after −' + Math.round(r.dailyLossLimit * 100) + '% in a day';
+    var p1 = function (x) { return (Math.round(x * 1000) / 10) + '%'; };
+    var hold = r.maxHoldHours < 2 ? Math.round(r.maxHoldHours * 60) + 'm' : r.maxHoldHours + 'h';
+    $('rules').innerHTML = '<b>Rules</b> · ' + esc(r.strategy || 'scalp') + ' · checks every ' + r.tickSeconds + 's, scans every ' + r.scanSeconds + 's · up to ' +
+      r.maxPositions + ' positions, ' + Math.round(r.positionPct * 100) + '% of equity each (max ' + usd(r.maxTrade) +
+      ') · stop loss −' + p1(r.stopLoss) + ' · take profit +' + p1(r.takeProfit) + ' · trailing stop ' + p1(r.trail) +
+      ' after +' + p1(r.trailArm) + (r.staleMinutes ? ' · exits flat trades after ' + r.staleMinutes + 'm' : '') + ' · max hold ' + hold +
+      ' · skips tokens costing over ' + p1(r.maxRoundTripCost) + ' round trip · stops buying after −' + p1(r.dailyLossLimit) + ' in a day';
   }
 
   function drawChart(pts) {
@@ -209,8 +202,7 @@
     svg.innerHTML = '<path d="' + d + ' L600 140 L0 140 Z" fill="' + color + '" opacity=".12"/><path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="2" vector-effect="non-scaling-stroke"/>';
   }
 
-  var refreshing = false;
-  function refresh() { if (!key || refreshing || document.hidden) return; refreshing = true; api('/api/state').then(render).catch(function () {}).finally(function () { refreshing = false; }); }
+  function refresh() { if (key) api('/api/state').then(render).catch(function () {}); }
 
   function action(btn, path, body, confirmMsg) {
     if (confirmMsg && !confirm(confirmMsg)) return;
@@ -236,7 +228,7 @@
   };
 
   if (key) refresh(); else showLogin('');
-  setInterval(refresh, 10000);
+  setInterval(refresh, 30000);
 })();
 </script>
 </body>

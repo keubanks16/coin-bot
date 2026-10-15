@@ -1,4 +1,5 @@
 import { runCycle, makeContext, sellPosition } from './bot.js';
+import { loadConfig } from './strategy.js';
 import { USDC, USDC_DECIMALS } from './jupiter.js';
 import DASHBOARD_HTML from './dashboard.html';
 
@@ -53,11 +54,6 @@ async function getState(env) {
     trades: await store.trades(mode, 50),
     events: await store.events(40),
     stats,
-    ai: cfg.LIVE ? null : await store.get('v2_learning_paper', {}),
-    scanEveryMin: cfg.SCAN_EVERY_MIN,
-    lastCycleAt: await store.get(`last_cycle_${mode}`, null),
-    lastFastCheckAt: cfg.LIVE ? null : await store.get('last_fast_check_paper', null),
-    scanDetails: await store.get(`last_scan_details_${mode}`, null),
     lastScanNote: await store.get('last_scan_note', null),
     history: history.filter((_, i) => i % step === 0 || i === history.length - 1),
     rules: {
@@ -70,6 +66,11 @@ async function getState(env) {
       maxTrade: cfg.MAX_TRADE_USD,
       dailyLossLimit: cfg.DAILY_LOSS_LIMIT_PCT,
       maxHoldHours: cfg.MAX_HOLD_HOURS,
+      strategy: cfg.STRATEGY,
+      tickSeconds: env.FAST_MONITOR ? cfg.TICK_SECONDS : 60,
+      scanSeconds: cfg.SCAN_EVERY_SEC,
+      staleMinutes: cfg.STALE_MINUTES,
+      maxRoundTripCost: cfg.MAX_ROUNDTRIP_COST_PCT,
     },
   };
 }
@@ -116,29 +117,47 @@ async function handleApi(req, env, path) {
   }
 }
 
+// Fast loop. Cron can only fire once a minute, so a Durable Object alarm re-runs the cycle
+// every TICK_SECONDS (default 5s). The every-minute cron just makes sure the loop is alive.
 export class FastMonitor {
-  constructor(state, env) { this.state = state; this.env = env; }
-  async start() {
-    if (!(await this.state.storage.getAlarm())) await this.state.storage.setAlarm(Date.now() + 10000);
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
   }
+
+  // Called by older deployments' cron; same as a kick.
+  async start() {
+    return this.fetch();
+  }
+
+  async fetch() {
+    const cur = await this.state.storage.getAlarm();
+    // Restart the loop if it has no alarm or the alarm is badly overdue.
+    if (!cur || cur < Date.now() - 30e3) await this.state.storage.setAlarm(Date.now() + 100);
+    return new Response('ok');
+  }
+
   async alarm() {
+    const { TICK_SECONDS } = loadConfig(this.env);
+    // Schedule the next tick first, so an error can never stop the loop.
+    await this.state.storage.setAlarm(Date.now() + TICK_SECONDS * 1000);
     try {
-      // Paper-only: do not activate 10-second trading for live funds.
-      if (String(this.env.LIVE_TRADING).toLowerCase() !== 'true') await runCycle(this.env, { manageOnly: true });
-    } finally {
-      await this.state.storage.setAlarm(Date.now() + 10000);
+      await runCycle(this.env);
+    } catch {
+      // already logged to the dashboard by runCycle
     }
   }
 }
 
+async function kickTicker(env) {
+  const stub = env.FAST_MONITOR.get(env.FAST_MONITOR.idFromName('paper-monitor'));
+  await stub.fetch('https://ticker/kick');
+}
+
 export default {
   async scheduled(_event, env, ctx) {
-    ctx.waitUntil((async () => {
-      if (env.FAST_MONITOR && String(env.LIVE_TRADING).toLowerCase() !== 'true') {
-        await env.FAST_MONITOR.get(env.FAST_MONITOR.idFromName('paper-monitor')).start();
-      }
-      await runCycle(env);
-    })().catch(() => {}));
+    if (env.FAST_MONITOR) ctx.waitUntil(kickTicker(env).catch(() => runCycle(env).catch(() => {})));
+    else ctx.waitUntil(runCycle(env).catch(() => {}));
   },
 
   async fetch(req, env) {
