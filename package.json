@@ -7,7 +7,7 @@
     "dev": "wrangler dev --test-scheduled",
     "deploy": "wrangler deploy",
     "db:init": "wrangler d1 execute phantom-alt-bot --remote --file=schema.sql",
-    "test": "node --no-warnings test/run.mjs && node --no-warnings test/worker.mjs"
+    "test": "node --no-warnings test/run.mjs && node --no-warnings test/worker.mjs && node --no-warnings test/adaptive.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"
