@@ -52,7 +52,7 @@ await worker.scheduled({}, env, { waitUntil: (p) => (waited = p) });
 await waited;
 
 // Fast loop: the cron kicks the Ticker, which keeps re-arming its own alarm.
-const { Ticker } = await import('../src/index.js');
+const { FastMonitor: Ticker } = await import('../src/index.js');
 let alarmAt = null;
 const storage = { getAlarm: async () => alarmAt, setAlarm: async (t) => { alarmAt = t; } };
 const ticker = new Ticker({ storage }, { ...env, TICK_SECONDS: '5' });
@@ -64,7 +64,7 @@ assert.ok(alarmAt >= before + 4900 && alarmAt <= Date.now() + 5100, 'next tick ~
 const kicked = alarmAt;
 await ticker.fetch(new Request('https://ticker/kick'));
 assert.equal(alarmAt, kicked, 'kick leaves a healthy loop alone');
-const tickerEnv = { ...env, TICKER: { idFromName: () => 'id', get: () => ticker } };
+const tickerEnv = { ...env, FAST_MONITOR: { idFromName: () => 'id', get: () => ticker } };
 alarmAt = null;
 await worker.scheduled({}, tickerEnv, { waitUntil: (p) => (waited = p) });
 await waited;

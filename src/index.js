@@ -67,7 +67,7 @@ async function getState(env) {
       dailyLossLimit: cfg.DAILY_LOSS_LIMIT_PCT,
       maxHoldHours: cfg.MAX_HOLD_HOURS,
       strategy: cfg.STRATEGY,
-      tickSeconds: env.TICKER ? cfg.TICK_SECONDS : 60,
+      tickSeconds: env.FAST_MONITOR ? cfg.TICK_SECONDS : 60,
       scanSeconds: cfg.SCAN_EVERY_SEC,
       staleMinutes: cfg.STALE_MINUTES,
       maxRoundTripCost: cfg.MAX_ROUNDTRIP_COST_PCT,
@@ -119,10 +119,15 @@ async function handleApi(req, env, path) {
 
 // Fast loop. Cron can only fire once a minute, so a Durable Object alarm re-runs the cycle
 // every TICK_SECONDS (default 5s). The every-minute cron just makes sure the loop is alive.
-export class Ticker {
+export class FastMonitor {
   constructor(state, env) {
     this.state = state;
     this.env = env;
+  }
+
+  // Called by older deployments' cron; same as a kick.
+  async start() {
+    return this.fetch();
   }
 
   async fetch() {
@@ -145,13 +150,13 @@ export class Ticker {
 }
 
 async function kickTicker(env) {
-  const stub = env.TICKER.get(env.TICKER.idFromName('main'));
+  const stub = env.FAST_MONITOR.get(env.FAST_MONITOR.idFromName('paper-monitor'));
   await stub.fetch('https://ticker/kick');
 }
 
 export default {
   async scheduled(_event, env, ctx) {
-    if (env.TICKER) ctx.waitUntil(kickTicker(env).catch(() => runCycle(env).catch(() => {})));
+    if (env.FAST_MONITOR) ctx.waitUntil(kickTicker(env).catch(() => runCycle(env).catch(() => {})));
     else ctx.waitUntil(runCycle(env).catch(() => {}));
   },
 

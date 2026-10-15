@@ -2,17 +2,19 @@ name = "phantom-alt-bot"
 main = "src/index.js"
 compatibility_date = "2026-10-01"
 
-# The cron fires every minute and keeps the fast loop (the Ticker Durable Object) alive.
-# The Ticker re-checks positions every TICK_SECONDS and scans for entries every SCAN_EVERY_SEC.
+# The cron fires every minute and keeps the fast loop (the FastMonitor Durable Object) alive.
+# FastMonitor re-checks positions every TICK_SECONDS and scans for entries every SCAN_EVERY_SEC.
 [triggers]
 crons = ["* * * * *"]
 
-[durable_objects]
-bindings = [{ name = "TICKER", class_name = "Ticker" }]
+# Same class and migration the bot already runs on Cloudflare, so redeploys never recreate it.
+[[durable_objects.bindings]]
+name = "FAST_MONITOR"
+class_name = "FastMonitor"
 
 [[migrations]]
-tag = "v1-ticker"
-new_sqlite_classes = ["Ticker"]
+tag = "fast-monitor-v1"
+new_sqlite_classes = ["FastMonitor"]
 
 [[rules]]
 type = "Text"
