@@ -142,12 +142,13 @@
     $('total').textContent = signed(total);
     $('total').className = 'v ' + cls(total);
     var st = s.stats || {};
-    $('winrate').textContent = st.sells ? Math.round(100 * st.wins / st.sells) + '% (' + st.sells + ')' : '–';
+    var pf = st.gross_loss > 0 ? ' · PF ' + (st.gross_win / st.gross_loss).toFixed(2) : '';
+    $('winrate').textContent = st.sells ? Math.round(100 * st.wins / st.sells) + '% (' + st.sells + ')' + pf : '–';
 
     drawChart(s.history || []);
 
     if (!s.positions.length) {
-      $('positions').innerHTML = '<div class="empty">No open positions. The bot scans every few minutes.</div>';
+      $('positions').innerHTML = '<div class="empty">No open positions. The bot scans every few seconds.</div>';
     } else {
       var h = '<table><tr><th>Token</th><th class="r">Cost</th><th class="r">Value</th><th class="r">P&amp;L</th><th class="r">Held</th><th></th></tr>';
       s.positions.forEach(function (p) {
@@ -176,9 +177,13 @@
     }).join('') : '<div class="empty">Nothing yet.</div>';
 
     var r = s.rules;
-    $('rules').innerHTML = '<b>Rules</b> · up to ' + r.maxPositions + ' positions, ' + Math.round(r.positionPct * 100) + '% of equity each (max ' + usd(r.maxTrade) +
-      ') · stop loss −' + Math.round(r.stopLoss * 100) + '% · take profit +' + Math.round(r.takeProfit * 100) + '% · trailing stop ' + Math.round(r.trail * 100) +
-      '% after +' + Math.round(r.trailArm * 100) + '% · max hold ' + r.maxHoldHours + 'h · stops buying after −' + Math.round(r.dailyLossLimit * 100) + '% in a day';
+    var p1 = function (x) { return (Math.round(x * 1000) / 10) + '%'; };
+    var hold = r.maxHoldHours < 2 ? Math.round(r.maxHoldHours * 60) + 'm' : r.maxHoldHours + 'h';
+    $('rules').innerHTML = '<b>Rules</b> · ' + esc(r.strategy || 'scalp') + ' · checks every ' + r.tickSeconds + 's, scans every ' + r.scanSeconds + 's · up to ' +
+      r.maxPositions + ' positions, ' + Math.round(r.positionPct * 100) + '% of equity each (max ' + usd(r.maxTrade) +
+      ') · stop loss −' + p1(r.stopLoss) + ' · take profit +' + p1(r.takeProfit) + ' · trailing stop ' + p1(r.trail) +
+      ' after +' + p1(r.trailArm) + (r.staleMinutes ? ' · exits flat trades after ' + r.staleMinutes + 'm' : '') + ' · max hold ' + hold +
+      ' · skips tokens costing over ' + p1(r.maxRoundTripCost) + ' round trip · stops buying after −' + p1(r.dailyLossLimit) + ' in a day';
   }
 
   function drawChart(pts) {

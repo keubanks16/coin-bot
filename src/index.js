@@ -1,4 +1,5 @@
 import { runCycle, makeContext, sellPosition } from './bot.js';
+import { loadConfig } from './strategy.js';
 import { USDC, USDC_DECIMALS } from './jupiter.js';
 import DASHBOARD_HTML from './dashboard.html';
 
@@ -65,6 +66,11 @@ async function getState(env) {
       maxTrade: cfg.MAX_TRADE_USD,
       dailyLossLimit: cfg.DAILY_LOSS_LIMIT_PCT,
       maxHoldHours: cfg.MAX_HOLD_HOURS,
+      strategy: cfg.STRATEGY,
+      tickSeconds: env.TICKER ? cfg.TICK_SECONDS : 60,
+      scanSeconds: cfg.SCAN_EVERY_SEC,
+      staleMinutes: cfg.STALE_MINUTES,
+      maxRoundTripCost: cfg.MAX_ROUNDTRIP_COST_PCT,
     },
   };
 }
@@ -111,9 +117,42 @@ async function handleApi(req, env, path) {
   }
 }
 
+// Fast loop. Cron can only fire once a minute, so a Durable Object alarm re-runs the cycle
+// every TICK_SECONDS (default 5s). The every-minute cron just makes sure the loop is alive.
+export class Ticker {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+  }
+
+  async fetch() {
+    const cur = await this.state.storage.getAlarm();
+    // Restart the loop if it has no alarm or the alarm is badly overdue.
+    if (!cur || cur < Date.now() - 30e3) await this.state.storage.setAlarm(Date.now() + 100);
+    return new Response('ok');
+  }
+
+  async alarm() {
+    const { TICK_SECONDS } = loadConfig(this.env);
+    // Schedule the next tick first, so an error can never stop the loop.
+    await this.state.storage.setAlarm(Date.now() + TICK_SECONDS * 1000);
+    try {
+      await runCycle(this.env);
+    } catch {
+      // already logged to the dashboard by runCycle
+    }
+  }
+}
+
+async function kickTicker(env) {
+  const stub = env.TICKER.get(env.TICKER.idFromName('main'));
+  await stub.fetch('https://ticker/kick');
+}
+
 export default {
   async scheduled(_event, env, ctx) {
-    ctx.waitUntil(runCycle(env).catch(() => {}));
+    if (env.TICKER) ctx.waitUntil(kickTicker(env).catch(() => runCycle(env).catch(() => {})));
+    else ctx.waitUntil(runCycle(env).catch(() => {}));
   },
 
   async fetch(req, env) {

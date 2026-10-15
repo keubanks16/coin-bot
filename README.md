@@ -12,45 +12,61 @@ plus Pause, Run now, Sell (one) and Sell all buttons.
 
 ## How it trades
 
-Every minute, the bot checks open positions. Every 5 minutes, it scans Jupiter's top
-trending and top traded tokens (1-hour window).
+The bot scalps: it gets into a fresh short-term push, takes a small gain, and gets out fast.
+
+**Speed.** A fast loop (a Durable Object alarm) re-prices open positions every **5 seconds**
+and scans for new entries every **30 seconds**. The every-minute cron only keeps that loop
+alive. These are tuned to the free Jupiter key's limit of 1 request/second; the bot spaces
+its calls automatically. With a paid Jupiter key, raise `JUP_RPS` and lower the timers.
 
 **Safety filter.** A token must pass all of these before it's considered:
 
 - mint and freeze authority both disabled (the dev can't print more or freeze your tokens)
 - not flagged suspicious by Jupiter, and top holders own ≤ 35%
-- liquidity ≥ $200k, market cap ≥ $1M
+- liquidity ≥ $300k, market cap ≥ $1M
 - Jupiter-verified, or organic score ≥ 60 (real traders, not bots)
 - first pool at least 48 hours old (skips fresh launches and rugs)
 
-**Entry signal.** The bot looks for a steady climb, not a spike:
+**Entry signal** (scans Jupiter's top trending and top traded tokens, 5-minute window):
 
-- up 3–25% over the last hour
-- still rising over the last 5 minutes, but by less than 6%
-- organic buy volume at least 1.15× organic sell volume, with more net buyers than sellers
-- at least $50k of volume in the hour
+- up 0.6–4% in the last 5 minutes (moving, not a vertical spike)
+- between −2% and +20% over the hour (not already exhausted)
+- at least $25k traded in the last 5 minutes and $100k in the hour
+- organic buy volume at least 1.25× organic sell volume, with more net buyers than sellers
+- ranked higher when more of the pool is turning over (tighter, faster fills)
 
-The strongest candidates are bought first, up to 4 positions. Each position is 15% of
-equity, capped at $250.
+**Cost check.** Before every buy, the bot gets a real quote to buy *and* a quote to sell
+straight back. If that round trip would lose more than **0.8%** (fees + price impact), or the
+take profit isn't at least 3× that cost, it skips the token. Small scalps only work when the
+cost of getting in and out is small.
+
+Up to 4 positions at once. Each is 15% of equity, capped at $250.
 
 **Exits.** Each position is sold on whichever comes first:
 
-- **Stop loss:** −8%
-- **Take profit:** +25%
-- **Trailing stop:** after +10%, sell if price drops 6% from its peak
-- **Max hold:** 24 hours
+- **Stop loss:** −2.5%
+- **Take profit:** +4%
+- **Trailing stop:** after +1.5%, sell if price drops 1% from its peak
+- **No momentum:** still under +0.5% after 15 minutes
+- **Max hold:** 1 hour
 
 **Guardrails:**
 
-- No new buys after a −8% day (resets at midnight UTC).
-- 6-hour cooldown before re-buying a token it just sold.
-- Paper fills take an extra 0.5% haircut so paper results aren't rosier than live.
+- No new buys after a −6% day (resets at midnight UTC).
+- No new buys for an hour after 4 losing trades in a row.
+- 30-minute cooldown before re-buying a token it just sold.
+- Paper and live use exactly the same rules, so paper results are a fair preview.
+- Paper fills take an extra 0.3% haircut so paper results aren't rosier than live.
 
+Set `STRATEGY = "momentum"` to go back to the original slower 1-hour swing strategy.
 Every number is a setting in `wrangler.toml` (full list in `src/strategy.js`).
 
-> **Be realistic.** No strategy reliably makes money on altcoins, and most momentum bots lose
-> to fees, slippage and sudden dumps. Paper trade for at least 2 weeks, and only go live with
-> money you can afford to lose entirely.
+The dashboard's win-rate card also shows **PF** (profit factor: total won ÷ total lost).
+Above 1.0 means the strategy is making money after costs; below 1.0, it isn't.
+
+> **Be realistic.** No strategy reliably makes money on altcoins, and most scalping bots lose
+> to fees, slippage and sudden dumps. Paper trade for at least 2 weeks and 100+ trades, only
+> go live if profit factor stays above about 1.2, and only with money you can afford to lose.
 
 ---
 
@@ -85,10 +101,11 @@ Every number is a setting in `wrangler.toml` (full list in `src/strategy.js`).
    npm run deploy
    ```
    Open the `https://phantom-alt-bot.<you>.workers.dev` URL it prints, enter your dashboard
-   password, and tap **Run now** to trigger the first scan. The cron runs every minute after
-   that, so you can close the page.
+   password, and tap **Run now** to trigger the first scan. Within a minute the cron starts
+   the 5-second loop, so you can close the page.
 
-Your Workers Paid plan easily covers the every-minute cron and D1 usage.
+Your Workers Paid plan covers the fast loop (about 17,000 short Durable Object runs a day)
+and the D1 usage.
 
 ---
 
@@ -139,14 +156,18 @@ the public endpoint for balance checks.
 - `src/bot.js`: the trading cycle
 - `src/jupiter.js`: Jupiter Swap v2 / Price v3 / Tokens v2 client
 - `src/solana.js`: Phantom key loading and transaction signing (no dependencies)
-- `src/index.js`: cron handler and dashboard API
+- `src/index.js`: cron handler, fast loop (Ticker Durable Object) and dashboard API
 - `src/dashboard.html`: the dashboard
 - `test/`: offline tests (`npm test`)
 
 ## Troubleshooting
 
 - **"none passed filters" every scan.** This is normal in quiet markets; the filters are
-  strict on purpose. To loosen them, lower `MIN_1H_CHANGE_PCT` or `MIN_LIQUIDITY_USD`.
+  strict on purpose. To loosen them, lower `MIN_5M_CHANGE_PCT`, `MIN_VOLUME_5M_USD` or
+  `MIN_LIQUIDITY_USD`.
+- **Lots of "Skip ...: round-trip cost too high".** Those tokens are too expensive to scalp at
+  your trade size. That's the filter protecting you; don't raise `MAX_ROUNDTRIP_COST_PCT` much.
+- **Jupiter `429`.** You're over your key's rate limit. Lower `JUP_RPS` or raise `TICK_SECONDS`.
 - **"Low SOL for fees".** Send the bot wallet more SOL.
 - **`order not buildable ... code 1`.** The wallet doesn't hold enough USDC.
 - **Jupiter `401`/`403`.** Check `JUPITER_API_KEY`.

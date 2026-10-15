@@ -15,7 +15,7 @@ const stmt = (sql, args = []) => ({
   all: async () => ({ results: db.prepare(sql).all(...args) }),
   run: async () => db.prepare(sql).run(...args),
 });
-const env = { DB: { prepare: (s) => stmt(s), batch: async (l) => Promise.all(l.map((s) => s.run())) }, DASHBOARD_PASSWORD: 'hunter2', JUPITER_API_KEY: 'k' };
+const env = { DB: { prepare: (s) => stmt(s), batch: async (l) => Promise.all(l.map((s) => s.run())) }, DASHBOARD_PASSWORD: 'hunter2', JUPITER_API_KEY: 'k', JUP_RPS: '1000' };
 
 globalThis.fetch = async (url) => {
   const u = new URL(url);
@@ -51,5 +51,24 @@ let waited;
 await worker.scheduled({}, env, { waitUntil: (p) => (waited = p) });
 await waited;
 
+// Fast loop: the cron kicks the Ticker, which keeps re-arming its own alarm.
+const { Ticker } = await import('../src/index.js');
+let alarmAt = null;
+const storage = { getAlarm: async () => alarmAt, setAlarm: async (t) => { alarmAt = t; } };
+const ticker = new Ticker({ storage }, { ...env, TICK_SECONDS: '5' });
+await ticker.fetch(new Request('https://ticker/kick'));
+assert.ok(alarmAt && alarmAt <= Date.now() + 1000, 'kick arms the alarm right away');
+const before = Date.now();
+await ticker.alarm();
+assert.ok(alarmAt >= before + 4900 && alarmAt <= Date.now() + 5100, 'next tick ~5s later');
+const kicked = alarmAt;
+await ticker.fetch(new Request('https://ticker/kick'));
+assert.equal(alarmAt, kicked, 'kick leaves a healthy loop alone');
+const tickerEnv = { ...env, TICKER: { idFromName: () => 'id', get: () => ticker } };
+alarmAt = null;
+await worker.scheduled({}, tickerEnv, { waitUntil: (p) => (waited = p) });
+await waited;
+assert.ok(alarmAt, 'cron restarts a dead loop');
+
 assert.deepEqual(await (await call('/api/reset-paper', { method: 'POST', headers: auth })).json(), { ok: true });
-console.log('worker entry: 9 checks passed');
+console.log('worker entry + fast loop: 13 checks passed');

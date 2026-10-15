@@ -26,3 +26,11 @@ export function learnOutcome(model={}, strategy, pnl) {
   next[strategy]={wins:old.wins+(pnl>0?1:0),losses:old.losses+(pnl<=0?1:0),net:old.net+pnl};
   return next;
 }
+/** Score multiplier (0.6–1.4) from a strategy's completed-trade record; 1 when there's no history. */
+export function adaptiveFactor(model={}, strategy) {
+  const s=model[strategy];
+  if (!s) return 1;
+  const n=(s.wins||0)+(s.losses||0);
+  const winRate=((s.wins||0)+2)/(n+4);
+  return Math.max(0.6,Math.min(1.4,0.8+winRate*0.4+Math.tanh((s.net||0)/100)*0.2));
+}
