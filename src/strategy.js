@@ -1,48 +1,93 @@
-// Strategy: filtered momentum on established Solana altcoins.
+// Strategy: fast, cost-aware scalping on established Solana altcoins.
 //
 // 1. Safety filter — skip anything that looks like a rug or a fresh launch.
-// 2. Entry — steady 1h uptrend driven by real (organic) buyers, not a vertical spike.
-// 3. Exit — stop loss, take profit, trailing stop once in profit, and a max hold time.
+// 2. Entry — a fresh 5-minute push driven by real (organic) buyers, inside a healthy 1h trend.
+//    Every buy must also pass a round-trip cost check (quote in AND back out), so the bot
+//    only scalps tokens where fees + slippage leave room for a profit.
+// 3. Exit — tight stop, quick take profit, trailing stop, a "dead trade" timeout, and a max hold.
 //
+// STRATEGY = "scalp" (default) or "momentum" (the original slower 1h swing strategy).
 // Every number here can be overridden with a wrangler.toml [vars] entry of the same name.
 
 import { USDC, SOL } from './jupiter.js';
 
-const DEFAULTS = {
+const COMMON = {
   PAPER_START_USD: 1000,
   POSITION_PCT: 0.15, // fraction of equity per new position
   MAX_POSITIONS: 4,
   MIN_TRADE_USD: 5,
   MAX_TRADE_USD: 250,
   CASH_RESERVE_USD: 2,
-  STOP_LOSS_PCT: 0.08,
-  TAKE_PROFIT_PCT: 0.25,
-  TRAIL_ARM_PCT: 0.10, // trailing stop activates after this gain...
-  TRAIL_PCT: 0.06, // ...and sells if price falls this far from the peak
-  MAX_HOLD_HOURS: 24,
-  DAILY_LOSS_LIMIT_PCT: 0.08, // stop opening trades for the day after this drawdown
-  COOLDOWN_HOURS: 6, // don't re-buy a token this soon after selling it
-  SCAN_EVERY_MIN: 5,
-  MIN_LIQUIDITY_USD: 200000,
+  DAILY_LOSS_LIMIT_PCT: 0.06, // stop opening trades for the day after this drawdown
+  LOSS_STREAK_LIMIT: 4, // this many losing trades in a row...
+  LOSS_STREAK_PAUSE_MIN: 60, // ...pauses new buys for this long
+  TICK_SECONDS: 5, // how often open positions are re-priced (fast loop)
+  SCAN_EVERY_SEC: 30, // how often to look for new entries
+  JUP_RPS: 1, // Jupiter API key budget (free key = 1/sec). Raise if you upgrade your key.
+  MAX_ROUNDTRIP_COST_PCT: 0.008, // reject a buy if buying+selling right away would lose more than this
+  MIN_PROFIT_TO_COST: 3, // take profit must be at least this many times the round-trip cost
+  MIN_LIQUIDITY_USD: 300000,
   MIN_MCAP_USD: 1000000,
-  MIN_VOLUME_1H_USD: 50000,
   MIN_ORGANIC_SCORE: 60,
   MAX_TOP_HOLDERS_PCT: 35,
   MIN_TOKEN_AGE_HOURS: 48,
-  MIN_1H_CHANGE_PCT: 3,
-  MAX_1H_CHANGE_PCT: 25,
-  MAX_5M_CHANGE_PCT: 6,
-  MIN_ORGANIC_BUY_RATIO: 1.15, // organic buy volume / organic sell volume (1h)
-  PAPER_SLIPPAGE_BPS: 50, // extra haircut on paper fills so paper isn't rosier than live
+  PAPER_SLIPPAGE_BPS: 30, // extra haircut on paper fills so paper isn't rosier than live
+  SCAN_INTERVAL: 0, // 0 = strategy default (5m for scalp, 1h for momentum)
+};
+
+const PROFILES = {
+  scalp: {
+    STOP_LOSS_PCT: 0.025,
+    TAKE_PROFIT_PCT: 0.04,
+    TRAIL_ARM_PCT: 0.015, // trailing stop activates after this gain...
+    TRAIL_PCT: 0.01, // ...and sells if price falls this far from the peak
+    STALE_MINUTES: 15, // a scalp that hasn't moved after this long...
+    STALE_MIN_GAIN_PCT: 0.005, // ...(still below +0.5%) is closed to free the money
+    MAX_HOLD_HOURS: 1,
+    COOLDOWN_HOURS: 0.5,
+    MIN_5M_CHANGE_PCT: 0.6,
+    MAX_5M_CHANGE_PCT: 4,
+    MIN_1H_CHANGE_PCT: -2,
+    MAX_1H_CHANGE_PCT: 20,
+    MIN_VOLUME_5M_USD: 25000,
+    MIN_VOLUME_1H_USD: 100000,
+    MIN_ORGANIC_BUY_RATIO: 1.25, // organic buy volume / organic sell volume (5m)
+  },
+  momentum: {
+    STOP_LOSS_PCT: 0.08,
+    TAKE_PROFIT_PCT: 0.25,
+    TRAIL_ARM_PCT: 0.1,
+    TRAIL_PCT: 0.06,
+    STALE_MINUTES: 0, // off
+    STALE_MIN_GAIN_PCT: 0,
+    MAX_HOLD_HOURS: 24,
+    COOLDOWN_HOURS: 6,
+    MIN_5M_CHANGE_PCT: 0,
+    MAX_5M_CHANGE_PCT: 6,
+    MIN_1H_CHANGE_PCT: 3,
+    MAX_1H_CHANGE_PCT: 25,
+    MIN_VOLUME_5M_USD: 0,
+    MIN_VOLUME_1H_USD: 50000,
+    MIN_ORGANIC_BUY_RATIO: 1.15, // organic buy / sell volume (1h)
+  },
 };
 
 export function loadConfig(env = {}) {
+  const strategy = String(env.STRATEGY || 'scalp').toLowerCase() === 'momentum' ? 'momentum' : 'scalp';
+  const defaults = { ...COMMON, ...PROFILES[strategy] };
+  // Backwards compatibility with the old minute-based scan setting.
+  if (env.SCAN_EVERY_SEC === undefined && env.SCAN_EVERY_MIN !== undefined && env.SCAN_EVERY_MIN !== '') {
+    env = { ...env, SCAN_EVERY_SEC: String(Number(env.SCAN_EVERY_MIN) * 60) };
+  }
   const cfg = {};
-  for (const [k, def] of Object.entries(DEFAULTS)) {
+  for (const [k, def] of Object.entries(defaults)) {
     const v = env[k];
     cfg[k] = v === undefined || v === '' ? def : Number(v);
     if (Number.isNaN(cfg[k])) cfg[k] = def;
   }
+  cfg.STRATEGY = strategy;
+  cfg.SCAN_INTERVAL_NAME = strategy === 'scalp' ? '5m' : '1h';
+  cfg.TICK_SECONDS = Math.max(2, cfg.TICK_SECONDS);
   cfg.LIVE = String(env.LIVE_TRADING || '').toLowerCase() === 'true';
   cfg.MODE = cfg.LIVE ? 'live' : 'paper';
   cfg.BLOCKLIST = new Set(
@@ -82,6 +127,10 @@ export function safetyReject(t, cfg, now = Date.now()) {
   return null;
 }
 
+const vol = (s) => (s?.buyVolume || 0) + (s?.sellVolume || 0);
+const organicRatio = (s) => (s?.buyOrganicVolume || 0) / Math.max(s?.sellOrganicVolume || 0, 1);
+const hasOrganic = (s) => s && (s.buyOrganicVolume !== undefined || s.sellOrganicVolume !== undefined);
+
 /** Returns a positive score if the entry signal fires, otherwise null. */
 export function entryScore(t, cfg) {
   const h = t.stats1h;
@@ -90,14 +139,41 @@ export function entryScore(t, cfg) {
   const ch1h = h.priceChange ?? 0;
   const ch5m = m.priceChange ?? 0;
   if (ch1h < cfg.MIN_1H_CHANGE_PCT || ch1h > cfg.MAX_1H_CHANGE_PCT) return null;
-  if (ch5m < 0 || ch5m > cfg.MAX_5M_CHANGE_PCT) return null; // still rising, not spiking
-  const vol = (h.buyVolume || 0) + (h.sellVolume || 0);
-  if (vol < cfg.MIN_VOLUME_1H_USD) return null;
-  const ratio = (h.buyOrganicVolume || 0) / Math.max(h.sellOrganicVolume || 0, 1);
+  if (ch5m < cfg.MIN_5M_CHANGE_PCT || ch5m > cfg.MAX_5M_CHANGE_PCT) return null; // rising, not spiking
+  if (ch5m < 0) return null;
+  if (vol(h) < cfg.MIN_VOLUME_1H_USD) return null;
+  const organic = (t.organicScore || 0) / 100;
+
+  if (cfg.STRATEGY === 'scalp') {
+    // Need real flow right now: 5m volume, and organic buyers outweighing sellers in the last 5m
+    // (falls back to 1h buy pressure if Jupiter didn't return 5m organic numbers).
+    if (vol(m) < cfg.MIN_VOLUME_5M_USD) return null;
+    const ratio = hasOrganic(m) ? organicRatio(m) : organicRatio(h);
+    if (ratio < cfg.MIN_ORGANIC_BUY_RATIO) return null;
+    if ((m.numNetBuyers ?? h.numNetBuyers ?? 0) <= 0) return null;
+    // Turnover: how much of the pool traded in 5m. More turnover = tighter, faster fills.
+    const turnover = Math.min(vol(m) / Math.max(t.liquidity || 1, 1), 1);
+    return ch5m * Math.min(ratio, 3) * (0.5 + organic) * (0.5 + turnover);
+  }
+
+  const ratio = organicRatio(h);
   if (ratio < cfg.MIN_ORGANIC_BUY_RATIO) return null;
   if ((h.numNetBuyers || 0) <= 0) return null;
-  const organic = (t.organicScore || 0) / 100;
   return ch1h * Math.min(ratio, 3) * (0.5 + organic);
+}
+
+/**
+ * Round-trip cost check from two real quotes: spend `usdIn`, get `tokensOut`, and selling
+ * those tokens straight back would return `usdBack`. Returns null if OK, else a reason.
+ */
+export function costReject(usdIn, usdBack, cfg) {
+  if (!(usdIn > 0) || !(usdBack > 0)) return 'no route back to USDC';
+  const cost = 1 - usdBack / usdIn;
+  if (cost > cfg.MAX_ROUNDTRIP_COST_PCT) return `round-trip cost ${(cost * 100).toFixed(2)}% too high`;
+  if (cost > 0 && cfg.TAKE_PROFIT_PCT < cost * cfg.MIN_PROFIT_TO_COST) {
+    return `take profit too small for ${(cost * 100).toFixed(2)}% round-trip cost`;
+  }
+  return null;
 }
 
 /**
@@ -108,12 +184,16 @@ export function exitDecision(pos, price, cfg, now = Date.now()) {
   const peak = Math.max(pos.peak_price || pos.entry_price, price);
   const pnl = price / pos.entry_price - 1;
   const peakGain = peak / pos.entry_price - 1;
+  const age = now - pos.opened_at;
   if (pnl <= -cfg.STOP_LOSS_PCT) return { sell: true, reason: 'stop loss', peak };
   if (pnl >= cfg.TAKE_PROFIT_PCT) return { sell: true, reason: 'take profit', peak };
   if (peakGain >= cfg.TRAIL_ARM_PCT && price <= peak * (1 - cfg.TRAIL_PCT)) {
     return { sell: true, reason: 'trailing stop', peak };
   }
-  if (now - pos.opened_at >= cfg.MAX_HOLD_HOURS * 3600e3) return { sell: true, reason: 'max hold time', peak };
+  if (cfg.STALE_MINUTES > 0 && age >= cfg.STALE_MINUTES * 60e3 && pnl < cfg.STALE_MIN_GAIN_PCT && peakGain < cfg.TRAIL_ARM_PCT) {
+    return { sell: true, reason: 'no momentum', peak };
+  }
+  if (age >= cfg.MAX_HOLD_HOURS * 3600e3) return { sell: true, reason: 'max hold time', peak };
   return { sell: false, reason: null, peak };
 }
 
