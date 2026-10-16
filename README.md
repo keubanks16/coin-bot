@@ -29,20 +29,21 @@ its calls automatically. With a paid Jupiter key, raise `JUP_RPS` and lower the 
 
 **Entry signal** (scans Jupiter's top trending and top traded tokens, 5-minute window):
 
-- up 0.6–4% in the last 5 minutes (moving, not a vertical spike)
-- between −2% and +20% over the hour (not already exhausted)
-- at least $25k traded in the last 5 minutes and $100k in the hour
+- up 1.2–5% in the last 5 minutes (moving, not a vertical spike)
+- up 2–20% over the hour (a real uptrend, not already exhausted)
+- at least $40k traded in the last 5 minutes and $100k in the hour
 - organic buy volume at least 1.25× organic sell volume, with more net buyers than sellers
 - ranked higher when more of the pool is turning over (tighter, faster fills)
 
 **Cost check.** Before every buy, the bot gets a real quote to buy *and* a quote to sell
-straight back. If that round trip would lose more than **0.8%** (fees + price impact), or the
+straight back. If that round trip would lose more than **0.6%** (fees + price impact), or the
 take profit isn't at least 3× that cost, it skips the token. Small scalps only work when the
 cost of getting in and out is small.
 
 Up to 4 positions at once. Each is 15% of equity, capped at $250.
 
-**Exits.** Each position is sold on whichever comes first:
+**Exits.** Positions are valued at what they would really sell for right now (a live sell
+quote after fees and price impact), not the display price. Each is sold on whichever comes first:
 
 - **Stop loss:** −2.5%
 - **Take profit:** +4%
@@ -54,7 +55,7 @@ Up to 4 positions at once. Each is 15% of equity, capped at $250.
 
 - No new buys after a −6% day (resets at midnight UTC).
 - No new buys for an hour after 4 losing trades in a row.
-- 30-minute cooldown before re-buying a token it just sold.
+- After a win, 30 minutes before re-buying that token; after a loss, 4 hours.
 - Paper and live use exactly the same rules, so paper results are a fair preview.
 - Paper fills take an extra 0.3% haircut so paper results aren't rosier than live.
 

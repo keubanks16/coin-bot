@@ -24,7 +24,7 @@ const COMMON = {
   TICK_SECONDS: 5, // how often open positions are re-priced (fast loop)
   SCAN_EVERY_SEC: 30, // how often to look for new entries
   JUP_RPS: 1, // Jupiter API key budget (free key = 1/sec). Raise if you upgrade your key.
-  MAX_ROUNDTRIP_COST_PCT: 0.008, // reject a buy if buying+selling right away would lose more than this
+  MAX_ROUNDTRIP_COST_PCT: 0.006, // reject a buy if buying+selling right away would lose more than this
   MIN_PROFIT_TO_COST: 3, // take profit must be at least this many times the round-trip cost
   MIN_LIQUIDITY_USD: 300000,
   MIN_MCAP_USD: 1000000,
@@ -45,11 +45,12 @@ const PROFILES = {
     STALE_MIN_GAIN_PCT: 0.005, // ...(still below +0.5%) is closed to free the money
     MAX_HOLD_HOURS: 1,
     COOLDOWN_HOURS: 0.5,
-    MIN_5M_CHANGE_PCT: 0.6,
-    MAX_5M_CHANGE_PCT: 4,
-    MIN_1H_CHANGE_PCT: -2,
+    LOSS_COOLDOWN_HOURS: 4, // after a losing trade, leave that token alone this long
+    MIN_5M_CHANGE_PCT: 1.2,
+    MAX_5M_CHANGE_PCT: 5,
+    MIN_1H_CHANGE_PCT: 2, // only buy pushes inside an hour-long uptrend
     MAX_1H_CHANGE_PCT: 20,
-    MIN_VOLUME_5M_USD: 25000,
+    MIN_VOLUME_5M_USD: 40000,
     MIN_VOLUME_1H_USD: 100000,
     MIN_ORGANIC_BUY_RATIO: 1.25, // organic buy volume / organic sell volume (5m)
   },
@@ -62,6 +63,7 @@ const PROFILES = {
     STALE_MIN_GAIN_PCT: 0,
     MAX_HOLD_HOURS: 24,
     COOLDOWN_HOURS: 6,
+    LOSS_COOLDOWN_HOURS: 6,
     MIN_5M_CHANGE_PCT: 0,
     MAX_5M_CHANGE_PCT: 6,
     MIN_1H_CHANGE_PCT: 3,
