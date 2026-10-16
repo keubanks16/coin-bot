@@ -183,7 +183,7 @@ function installMock(market) {
     if (u.pathname.startsWith('/tokens/v2/')) return reply(market.tokens);
     if (u.pathname === '/price/v3') {
       const out = {};
-      for (const id of u.searchParams.get('ids').split(',')) if (market.prices[id]) out[id] = { usdPrice: market.prices[id], decimals: 6 };
+      for (const id of u.searchParams.get('ids').split(',')) if (market.prices[id]) out[id] = { usdPrice: market.prices[id] * (1 + (market.apiBoost || 0)), decimals: 6 };
       return reply(out);
     }
     if (u.pathname === '/swap/v2/order') {
@@ -276,6 +276,32 @@ await test('skips tokens that are too expensive to round-trip', async () => {
   assert.equal(r.bought, 0);
   const events = DB.raw.prepare('SELECT msg FROM events').all().map((e) => e.msg).join('\n');
   assert.match(events, /Skip GOOD: round-trip cost 2\.00% too high/);
+});
+
+await test('exits use the real sell quote, not the display price', async () => {
+  const DB = makeD1();
+  const market = { calls: [], tokens: [good], prices: { [good.id]: 0.5 } };
+  installMock(market);
+  const env = { DB, JUP_RPS: '1000' };
+  await runCycle(env, { forceScan: true });
+  // Display price says +6% (would trigger take profit), but selling really returns about break-even.
+  market.apiBoost = 0.06;
+  market.prices[good.id] = 0.502;
+  const r = await runCycle(env);
+  assert.equal(r.positions, 1, 'must not "take profit" on a gain it cannot actually sell for');
+  assert.equal(DB.raw.prepare("SELECT COUNT(*) n FROM trades WHERE side='sell'").get().n, 0);
+});
+
+await test('a losing token gets a long cooldown', async () => {
+  const DB = makeD1();
+  const market = { calls: [], tokens: [good], prices: { [good.id]: 0.5 } };
+  installMock(market);
+  const env = { DB, JUP_RPS: '1000', LOSS_STREAK_LIMIT: '0' };
+  await runCycle(env, { forceScan: true });
+  market.prices[good.id] = 0.48; // -4% -> stop loss
+  await runCycle(env);
+  const until = DB.raw.prepare('SELECT until FROM cooldowns').get().until;
+  assert.ok(until - Date.now() > 3.9 * HOUR, 'about 4 hours');
 });
 
 await test('losing streak pauses new buys', async () => {
