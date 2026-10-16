@@ -63,30 +63,36 @@ async function adjustPaperCash(ctx, delta) {
   await ctx.store.set('paper_cash', Math.round((cash + delta) * 1e6) / 1e6);
 }
 
-/** Current USD price for each open position (one batched Price API call, falling back to a sell quote). */
+/**
+ * What each open position would actually sell for right now, as a per-token USD price.
+ * Uses a real sell quote (after fees and price impact, plus the paper haircut), so exits
+ * trigger on money you can really get, not on a display price. Falls back to the Price API.
+ */
 async function priceOpenPositions(ctx, positions) {
   const prices = {};
-  if (!positions.length) return prices;
-  let api = {};
-  try {
-    api = await ctx.jup.prices(positions.map((p) => p.mint));
-  } catch (e) {
-    await ctx.store.log('warn', `Price API: ${e.message}`);
-  }
+  const missing = [];
   for (const p of positions) {
-    const px = api[p.mint]?.usdPrice;
-    if (px > 0) {
-      prices[p.mint] = px;
-      continue;
-    }
     try {
       const q = await ctx.jup.order({ inputMint: p.mint, outputMint: USDC, amount: p.qty_raw });
-      const value = toUnits(q.outAmount || '0', USDC_DECIMALS);
+      let value = toUnits(q.outAmount || '0', USDC_DECIMALS);
+      if (!ctx.cfg.LIVE) value *= 1 - ctx.cfg.PAPER_SLIPPAGE_BPS / 10000;
       const qty = toUnits(p.qty_raw, p.decimals);
       if (value > 0 && qty > 0) prices[p.mint] = value / qty;
+      else missing.push(p);
     } catch (e) {
-      await ctx.store.log('warn', `No price for ${p.symbol}: ${e.message}`);
+      missing.push(p);
     }
+  }
+  if (!missing.length) return prices;
+  try {
+    const api = await ctx.jup.prices(missing.map((p) => p.mint));
+    for (const p of missing) {
+      const px = api[p.mint]?.usdPrice;
+      if (px > 0) prices[p.mint] = px;
+      else await ctx.store.log('warn', `No price for ${p.symbol}`);
+    }
+  } catch (e) {
+    await ctx.store.log('warn', `Price API: ${e.message}`);
   }
   return prices;
 }
@@ -126,7 +132,9 @@ export async function sellPosition(ctx, pos, reason) {
     await store.set(learnKey(mode), learnOutcome(model, strategy, pnl));
     await store.set(sk, null);
   }
-  await store.setCooldown(mode, pos.mint, Date.now() + ctx.cfg.COOLDOWN_HOURS * 3600e3);
+  // A token that just lost money gets a much longer break before the bot tries it again.
+  const coolHours = pnl > 0 ? ctx.cfg.COOLDOWN_HOURS : ctx.cfg.LOSS_COOLDOWN_HOURS;
+  await store.setCooldown(mode, pos.mint, Date.now() + coolHours * 3600e3);
   const held = Math.round((Date.now() - pos.opened_at) / 60e3);
   await store.log('info', `SELL ${pos.symbol} ${fmt(proceeds)} (${reason}, held ${held}m) P&L ${pnl >= 0 ? '+' : ''}${fmt(pnl)}`);
   return { ok: true, pnl };
