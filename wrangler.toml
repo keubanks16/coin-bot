@@ -56,8 +56,8 @@ TRAIL_PCT = "0.01"
 STALE_MINUTES = "15"
 MAX_HOLD_HOURS = "1"
 
-# Only trade tokens cheap enough to scalp: buying and selling right back must cost <= 0.8%.
-MAX_ROUNDTRIP_COST_PCT = "0.008"
+# Only trade tokens cheap enough to scalp: buying and selling right back must cost <= 0.6%.
+MAX_ROUNDTRIP_COST_PCT = "0.006"
 
 # Optional: a paid/dedicated RPC is more reliable than the public one in live mode
 # SOLANA_RPC_URL = "https://mainnet.helius-rpc.com/?api-key=..."
