@@ -334,4 +334,92 @@ await test('metadata falls back to other IPFS gateways', async () => {
   globalThis.fetch = realFetch;
 });
 
+await test('graduation waits for a full-size route, survives restart, and sells using USDC quote only', async () => {
+  const { DB, world, env, engine, tick } = await setup();
+  const t0 = Date.now();
+  const c = launch(world, engine, 'GRAD', t0);
+  for (let i = 1; i <= 8; i++) { trade(c, 0.5); await tick(t0 + i * 2000); }
+  const ctx = await makeContext(env);
+  const pos = await ctx.store.position('paper', 'GRAD');
+  assert.ok(pos);
+  const cash = await ctx.store.get('paper_cash');
+  const realFetch = globalThis.fetch;
+  let quote = { error: 'no route' };
+  globalThis.fetch = async (url, init) => {
+    const u = new URL(url);
+    if (u.pathname === '/swap/v2/order') {
+      assert.equal(u.searchParams.get('inputMint'), 'GRAD');
+      assert.equal(u.searchParams.get('outputMint'), 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+      assert.equal(u.searchParams.get('amount'), pos.qty_raw);
+      assert.equal(u.searchParams.has('taker'), false, 'paper quote never signs');
+      return new Response(JSON.stringify(quote));
+    }
+    return realFetch(url, init);
+  };
+  c.complete = true;
+  await tick(t0 + 18000);
+  assert.equal(trades(DB).length, 1, 'no fabricated graduation sale');
+  assert.equal(await ctx.store.get('paper_cash'), cash);
+  assert.ok(await ctx.store.position('paper', 'GRAD'));
+  assert.equal(await ctx.store.get('pump_model', null), null, 'no premature lesson');
+  const manual = await sellPosition(ctx, pos, 'manual');
+  assert.equal(manual.pending, true);
+  assert.equal(events(DB).split('waiting for post-migration sell route').length - 1, 1, 'warnings rate limited');
+
+  // Migration state is durable even if the curve disappears and the object restarts.
+  delete world.curves['curve-GRAD'];
+  const restarted = new PumpEngine(env);
+  restarted.feedDisabled = true;
+  quote = { inputMint: 'GRAD', outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', inAmount: pos.qty_raw, outAmount: '40000000', transaction: null };
+  for (const invalid of [{ outAmount: '0' }, { inAmount: '1' }, { outputMint: 'wrong' }, { errorCode: 3 }, { outAmount: 'NaN' }]) {
+    const good = quote;
+    quote = { ...good, ...invalid };
+    await restarted.tick(await makeContext(env), t0 + 20000);
+    assert.equal(trades(DB).length, 1, 'invalid route cannot close the position');
+    quote = good;
+  }
+  await restarted.tick(await makeContext(env), t0 + 22000);
+  const sale = trades(DB)[1];
+  assert.equal(sale.reason, 'graduated');
+  assert.equal(sale.usd, 38.8, 'quote less 3% haircut, no extra curve fees');
+  assert.equal(await ctx.store.get('paper_cash'), cash + 38.8);
+  assert.equal(await ctx.store.position('paper', 'GRAD'), null);
+  assert.equal((await ctx.store.get('pump_model')).real, 1);
+  await restarted.tick(await makeContext(env), t0 + 24000);
+  assert.equal(trades(DB).length, 2, 'sale recorded once');
+});
+
+await test('graduated shadows only become lessons when a migration sell quote exists', async () => {
+  const { DB, world, env, engine, tick } = await setup();
+  const ctx = await makeContext(env);
+  await ctx.store.set('paused', true);
+  const t0 = Date.now();
+  const c = launch(world, engine, 'SHGRAD', t0);
+  for (let i = 1; i <= 8; i++) { trade(c, 0.5); await tick(t0 + i * 2000); }
+  assert.ok(engine.shadows.has('SHGRAD'));
+  const sh = engine.shadows.get('SHGRAD');
+  const realFetch = globalThis.fetch;
+  let routed = false;
+  globalThis.fetch = async (url, init) => {
+    if (new URL(url).pathname === '/swap/v2/order') {
+      if (!routed) return new Response('unavailable', { status: 503 });
+      return new Response(JSON.stringify({ inputMint: 'SHGRAD', outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', inAmount: sh.tokens.toString(), outAmount: '10000000' }));
+    }
+    return realFetch(url, init);
+  };
+  c.complete = true;
+  await tick(t0 + 18000);
+  assert.ok(engine.shadows.has('SHGRAD'));
+  assert.equal(await ctx.store.get('pump_model', null), null);
+  delete world.curves['curve-SHGRAD'];
+  routed = true;
+  await tick(t0 + 20000);
+  assert.equal(engine.shadows.has('SHGRAD'), false);
+  const model = await ctx.store.get('pump_model');
+  assert.equal(model.shadow, 1);
+  assert.ok(Math.abs(model.sum - (9.7 / 20 - 1)) < 1e-9);
+  assert.equal(trades(DB).length, 0);
+});
+
 console.log(`\n${passed} pump tests passed`);
+
