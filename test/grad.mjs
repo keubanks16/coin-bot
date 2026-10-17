@@ -236,6 +236,21 @@ await test('keeps looking for the pool until it appears', async () => {
   assert.equal(ctx.engine.coins.get(mint).pool.pool, pool.p.key);
 });
 
+await test('reports pool lookup errors instead of hiding them', async () => {
+  const ctx = await setup();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (init?.body && JSON.parse(init.body).method === 'getProgramAccounts') return new Response(JSON.stringify({ error: { message: 'method not allowed' } }));
+    return realFetch(url, init);
+  };
+  const t0 = Date.now();
+  ctx.engine.handleMigration({ txType: 'migrate', mint: key() }, t0, 'ERR');
+  await ctx.tick(t0 + 2000);
+  globalThis.fetch = realFetch;
+  assert.equal(ctx.engine.lookupErrors, 1);
+  assert.match(events(ctx.DB), /couldn't look up a pool \(RPC getProgramAccounts: method not allowed\)/);
+});
+
 await test('dashboard Sell button sells a graduated position', async () => {
   const ctx = await setup();
   const mint = key();
