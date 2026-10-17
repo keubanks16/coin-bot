@@ -131,7 +131,7 @@ await test('buy then immediate sell loses about the fees', () => {
 
 console.log('pump.fun engine');
 await test('buys a coin with real buying, rides it, sells on the first downturn for a profit', async () => {
-  const { DB, world, engine, tick } = await setup();
+  const { DB, world, engine, tick } = await setup({ PUMP_TAKE_PROFIT_USD: '0' });
   const t0 = Date.now();
   const c = launch(world, engine, 'MOON', t0);
   let t = t0;
@@ -160,6 +160,33 @@ await test('buys a coin with real buying, rides it, sells on the first downturn 
   assert.ok(tr[1].pnl_usd > 5, `profit ${tr[1].pnl_usd}`);
   const cash = JSON.parse(DB.raw.prepare("SELECT v FROM state WHERE k='paper_cash'").get().v);
   assert.ok(Math.abs(cash - (1000 + tr[1].pnl_usd)) < 1e-6);
+});
+
+await test('takes a $5 profit as soon as it is there', async () => {
+  const { DB, world, engine, tick } = await setup();
+  const t0 = Date.now();
+  const c = launch(world, engine, 'TP', t0);
+  let t = t0;
+  for (let i = 1; i <= 8; i++) { t = t0 + i * 2000; trade(c, 0.5); await tick(t); }
+  assert.equal(trades(DB).length, 1);
+  for (let i = 0; i < 10 && trades(DB).length < 2; i++) { t += 2000; trade(c, 1); await tick(t); }
+  const tr = trades(DB);
+  assert.equal(tr[1].reason, 'take profit');
+  assert.ok(tr[1].pnl_usd >= 5 && tr[1].pnl_usd < 9, `pnl ${tr[1].pnl_usd}`);
+});
+
+await test('scores every take-profit target on each coin it follows', async () => {
+  const { DB, world, engine, tick } = await setup({ PUMP_MAX_POSITIONS: '0' });
+  const t0 = Date.now();
+  const c = launch(world, engine, 'BOARD', t0);
+  let t = t0;
+  for (let i = 1; i <= 8; i++) { t = t0 + i * 2000; trade(c, 0.5); await tick(t); }
+  for (let i = 0; i < 6; i++) { t += 2000; trade(c, 2); await tick(t); } // runs up
+  t += 2000; trade(c, -25); await tick(t); // then dumps through the stop
+  const board = JSON.parse(DB.raw.prepare("SELECT v FROM state WHERE k='pump_tp_board'").get().v);
+  assert.ok(board['10'].sum > 0.1, 'a 10% target would have banked a win');
+  assert.ok(board.none.sum < -0.2, 'riding it out would have lost');
+  assert.equal(board['25'].n, 1);
 });
 
 await test('cuts a loser at the stop loss', async () => {
@@ -279,7 +306,7 @@ await test('follows coins it skips (shadow trades) and learns from them', async 
   trade(c, -6);
   await tick(t);
   assert.ok(!engine.shadows.has('SHADOW'));
-  const model = JSON.parse(DB.raw.prepare("SELECT v FROM state WHERE k='pump_model'").get().v);
+  const model = JSON.parse(DB.raw.prepare("SELECT v FROM state WHERE k='pump_model_v2'").get().v);
   assert.equal(model.n, 1);
   assert.equal(model.shadow, 1);
   assert.ok(model.sum < -0.25, 'recorded as a big loss');
@@ -294,7 +321,7 @@ await test('real trades become lessons too', async () => {
   t += 2000;
   trade(c, -6);
   await tick(t);
-  const model = JSON.parse(DB.raw.prepare("SELECT v FROM state WHERE k='pump_model'").get().v);
+  const model = JSON.parse(DB.raw.prepare("SELECT v FROM state WHERE k='pump_model_v2'").get().v);
   assert.equal(model.real, 1);
 });
 
@@ -303,7 +330,7 @@ await test('once trained, skips setups it has learned lose, and still buys ones 
   for (let i = 0; i < 20; i++) m = learn(m, { ...young, age: 12 }, -0.33);
   for (let i = 0; i < 20; i++) m = learn(m, { ...young, age: 60 }, 0.3);
   const { DB, world, engine, tick } = await setup({ LEARN_MIN_LESSONS: '10' });
-  DB.raw.prepare("INSERT INTO state (k, v) VALUES ('pump_model', ?)").run(JSON.stringify(m));
+  DB.raw.prepare("INSERT INTO state (k, v) VALUES ('pump_model_v2', ?)").run(JSON.stringify(m));
   const t0 = Date.now();
   const fast = launch(world, engine, 'FAST', t0);
   for (let i = 1; i <= 8; i++) { trade(fast, 0.5); await tick(t0 + i * 2000); } // buyable at ~12s old

@@ -81,6 +81,7 @@ async function getState(env) {
         maxMcap: cfg.PUMP_MAX_MCAP_SOL,
         maxDev: cfg.PUMP_MAX_DEV_PCT,
         socials: !!cfg.PUMP_REQUIRE_SOCIALS,
+        takeProfitUsd: cfg.PUMP_TAKE_PROFIT_USD,
         stopLoss: cfg.PUMP_STOP_LOSS_PCT,
         arm: cfg.PUMP_TRAIL_ARM_PCT,
         downturn: cfg.PUMP_DOWNTURN_PCT,

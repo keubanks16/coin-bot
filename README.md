@@ -30,6 +30,7 @@ putting in.
 
 **When it sells** (whichever comes first):
 
+- **Take profit:** as soon as the trade is up $5 after fees (`PUMP_TAKE_PROFIT_USD`; 0 turns it off)
 - **First downturn:** once it's up 5%, the first 12% drop from its highest point
 - **Stop loss:** −25%
 - **Stalled:** nobody has bought for 45 seconds
@@ -54,6 +55,11 @@ for each kind of setup, pulling small samples toward the overall average so a fe
 can't fool it. After 30 lessons it only buys setups it expects to profit from, and logs why it
 skips the others. Skipped coins are still followed, so it can change its mind. The dashboard's
 "What it's learned" section shows which setups have worked best and worst.
+
+**Which profit target works.** Every coin it follows is also scored against several
+take-profit targets at once (+10%, +15%, +25%, +40%, +60% and none), following each coin until
+its other exits fire. The dashboard shows what each target would have averaged per trade after
+fees, so you can pick the target the data supports.
 
 If nothing it sees is profitable after fees, it will learn that too and mostly stop buying.
 That's the honest answer, not a bug.
