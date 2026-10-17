@@ -57,6 +57,25 @@ const PUMP = {
   PUMP_FEE_BPS: 125, // pump.fun protocol + creator fee per side (low-market-cap tier)
   PUMP_PAPER_SLIPPAGE_BPS: 300, // paper haircut per side: real snipers get in ahead of a 2s poll
   PUMP_MAX_SHADOWS: 40, // coins followed without money at once, to learn from (see src/learn.js)
+  // Graduated coins (src/grad.js), run alongside the sniper in pump mode.
+  GRAD_ENABLED: 1,
+  GRAD_TRADE_USD: 20,
+  GRAD_MAX_POSITIONS: 3,
+  GRAD_MIN_WAIT_SEC: 60, // skip the first minute of snipers and early holders cashing out
+  GRAD_MAX_AGE_MIN: 15, // only buy within this long after graduating
+  GRAD_MIN_LIQ_SOL: 50, // SOL in the pool
+  GRAD_MIN_INFLOW_SOL: 3, // SOL added to the pool over the last minute (net buying)
+  GRAD_MIN_TICK_RISE_PCT: 0.5, // climbing right now (vs ~10 seconds ago)
+  GRAD_MAX_DIP_PCT: 40, // skip if it's already fallen this far from its post-graduation high
+  GRAD_TAKE_PROFIT_USD: 5,
+  GRAD_STOP_LOSS_PCT: 0.15,
+  GRAD_TRAIL_ARM_PCT: 0.04,
+  GRAD_DOWNTURN_PCT: 0.1,
+  GRAD_STALL_SEC: 60,
+  GRAD_MAX_HOLD_MIN: 15,
+  GRAD_FEE_BPS: 125, // PumpSwap fee estimate for watching; real buys/sells use Jupiter quotes
+  GRAD_PAPER_SLIPPAGE_BPS: 100, // paper haircut per side (less sniper competition a minute in)
+  GRAD_MAX_SHADOWS: 30,
   LEARN_MIN_LESSONS: 30, // after this many finished lessons, the model decides what to buy...
   LEARN_MIN_EDGE_PCT: 0, // ...and only buys setups it expects to return more than this (after fees)
 };

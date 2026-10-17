@@ -78,6 +78,26 @@ endpoint may rate-limit a bot that reads the chain every 2 seconds.
 
 ---
 
+## Graduated coins (runs alongside the sniper, paper only)
+
+When a pump.fun coin fills its launch curve it "graduates" to a PumpSwap pool and trades like any
+Solana token (Jupiter and Phantom can swap it). The bot hears each graduation on the same free
+PumpPortal feed, finds the coin's pool on-chain, and reads the pool's SOL and token balances every
+2 seconds.
+
+**What it buys** ($20 each, up to 3 at once): a coin that graduated 1–15 minutes ago (the first
+minute of snipers and early holders cashing out is skipped), with 50+ SOL in its pool, at least
+3 SOL of net buying over the last minute, still climbing over the last ~10 seconds, and not
+already 40% below its post-graduation high.
+
+**When it sells** (whichever comes first): +$5 after fees · a 10% drop from its peak once it's up
+4% · −15% stop · 60 seconds with no buyers · 15 minutes.
+
+Buys and sells are priced with real Jupiter quotes (fees and price impact included) plus a 1%
+paper haircut each way, so paper results should be close to what real trades would get. It has its
+own learning and its own "which profit target works" table on the dashboard, so you can compare it
+with the sniper. `GRAD_ENABLED = "0"` turns it off.
+
 ## Scalp strategy (`STRATEGY = "scalp"`)
 
 The bot scalps: it gets into a fresh short-term push, takes a small gain, and gets out fast.

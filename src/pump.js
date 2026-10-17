@@ -13,6 +13,7 @@
 
 import { SOL, USDC, USDC_DECIMALS } from './jupiter.js';
 import { featuresOf, learn, predict, summarize } from './learn.js';
+import { GradEngine } from './grad.js';
 
 const CURVE_DISCRIMINATOR = [23, 183, 248, 55, 96, 216, 172, 96];
 const TOKEN_DECIMALS = 6;
@@ -290,6 +291,8 @@ export class PumpEngine {
     this.shadows = new Map(); // mint -> coin followed without money, to learn from
     this.model = null;
     this.modelAt = 0;
+    this.grad = new GradEngine(env); // graduated coins (src/grad.js)
+    this.symbols = new Map(); // mint -> symbol, so graduations can be named
   }
 
   async loadModel(ctx, now) {
@@ -313,7 +316,13 @@ export class PumpEngine {
 
   /** A message from the PumpPortal feed. */
   handleMessage(m, now = Date.now(), cfg = null) {
+    if (m && m.mint && (m.txType === 'migrate' || m.txType === 'migration')) {
+      this.grad.handleMigration(m, now, this.symbols.get(m.mint));
+      return;
+    }
     if (!m || m.txType !== 'create' || !m.mint || !m.bondingCurveKey) return;
+    this.symbols.set(m.mint, String(m.symbol || '?').slice(0, 16));
+    if (this.symbols.size > 60000) this.symbols.delete(this.symbols.keys().next().value);
     if (m.pool && m.pool !== 'pump') return; // other launchpads use different curves
     this.seen++;
     this.lastCoinAt = now;
@@ -376,6 +385,7 @@ export class PumpEngine {
       ws.addEventListener('close', drop);
       ws.addEventListener('error', drop);
       ws.send(JSON.stringify({ method: 'subscribeNewToken' }));
+      if (ctx.cfg.GRAD_ENABLED) ws.send(JSON.stringify({ method: 'subscribeMigration' }));
       this.ws = ws;
       this.lastMsgAt = now;
       this.feedState = 'connected';
@@ -608,7 +618,7 @@ export class PumpEngine {
       else if (r) picks.push({ c, s, ...r });
     }
     picks.sort((a, b) => b.score - a.score);
-    let slots = cfg.MAX_POSITIONS - positions.length;
+    let slots = cfg.MAX_POSITIONS - positions.filter((p) => this.held.has(p.mint)).length;
     let available = cash;
     let bought = 0;
     const model = await this.loadModel(ctx, now);
@@ -648,6 +658,14 @@ export class PumpEngine {
       }
       this.addShadow(c, pick.s, feats, solUsd, cfg, now);
       this.watch.delete(c.mint);
+    }
+
+    if (cfg.GRAD_ENABLED) {
+      try {
+        await this.grad.tick(ctx, now, { solUsd, paused, halted });
+      } catch (e) {
+        await this.warn(ctx, 'grad', `Graduated coins: ${e.message}`);
+      }
     }
 
     return { mode, equity, cash, positions: positions.length, watching: this.watch.size, bought, paused, halted };

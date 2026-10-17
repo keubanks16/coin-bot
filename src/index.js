@@ -89,6 +89,12 @@ async function getState(env) {
         maxHold: cfg.PUMP_MAX_HOLD_MIN,
         dailyLossLimit: cfg.DAILY_LOSS_LIMIT_PCT,
         status: await store.get('pump_status', null),
+        grad: cfg.GRAD_ENABLED ? {
+          tradeUsd: cfg.GRAD_TRADE_USD, maxPositions: cfg.GRAD_MAX_POSITIONS, wait: cfg.GRAD_MIN_WAIT_SEC, maxAge: cfg.GRAD_MAX_AGE_MIN,
+          minLiq: cfg.GRAD_MIN_LIQ_SOL, minInflow: cfg.GRAD_MIN_INFLOW_SOL, takeProfitUsd: cfg.GRAD_TAKE_PROFIT_USD, stopLoss: cfg.GRAD_STOP_LOSS_PCT,
+          arm: cfg.GRAD_TRAIL_ARM_PCT, downturn: cfg.GRAD_DOWNTURN_PCT, stall: cfg.GRAD_STALL_SEC, maxHold: cfg.GRAD_MAX_HOLD_MIN,
+          status: await store.get('grad_status', null),
+        } : null,
       } : null,
     },
   };
