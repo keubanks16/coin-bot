@@ -19,14 +19,14 @@ announces every new pump.fun coin the moment it launches. Every 2 seconds it rea
 coin's bonding curve straight from Solana, in one batched call, to see how much SOL people are
 putting in.
 
-**What it buys** ($20 each, up to 3 at once). A coin must be all of these:
+**What it buys** ($20 each, up to 5 at once). A coin must be all of these:
 
 - under 3 minutes old, and at least 10 seconds old (skips the bundled launch buys)
-- at least 3 SOL of buying from other traders since launch (the creator's own buy doesn't count)
-- still cheap: market cap under 90 SOL (coins launch at about 28 SOL)
+- at least 2 SOL of buying from other traders since launch (the creator's own buy doesn't count)
+- still cheap: market cap under 120 SOL (coins launch at about 28 SOL)
 - climbing right now: up at least 1% in the last ~4 seconds, and not already falling off its high
 - creator bought no more than 10% of the supply, and hasn't sold half of it
-- has a Twitter, Telegram or website link in its metadata
+- has a Twitter, Telegram or website link in its metadata (if the metadata can't be loaded, it isn't skipped for that)
 
 **When it sells** (whichever comes first):
 
@@ -44,7 +44,7 @@ learning outcome. Open positions retain their last valuation while waiting (not 
 exit value). The pending graduation state survives restarts. These are simulated quote-based
 fills, not confirmed transactions or a guarantee of live execution.
 
-It never buys the same coin twice, and stops buying for the day after a −6% day.
+It never buys the same coin twice, and stops buying for the day after a −20% day (`PUMP_DAILY_LOSS_LIMIT_PCT`).
 
 **Learning from its mistakes.** Every coin that passes the filters becomes a lesson, whether the
 bot buys it or not. Coins it can't or won't buy are followed as "shadow trades" with the same

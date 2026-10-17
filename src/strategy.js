@@ -39,12 +39,13 @@ const COMMON = {
 // Settings for STRATEGY = "pump" (new pump.fun coins). Always loaded; only used in pump mode.
 const PUMP = {
   PUMP_TRADE_USD: 20, // size of each pump.fun buy
-  PUMP_MAX_POSITIONS: 3,
+  PUMP_DAILY_LOSS_LIMIT_PCT: 0.2, // pump mode stops new buys (sniper and graduates) after this drawdown in a day
+  PUMP_MAX_POSITIONS: 5,
   PUMP_POLL_SECONDS: 2, // how often watched coins and open positions are re-read on-chain
   PUMP_MIN_AGE_SEC: 10, // ignore a coin's first seconds (bundled launch buys)
   PUMP_MAX_AGE_SEC: 180, // only buy coins younger than this
-  PUMP_MIN_INFLOW_SOL: 3, // SOL other traders put in since launch (excludes the dev's own buy)
-  PUMP_MAX_MCAP_SOL: 90, // "cheap": market cap at most this (launch is ~28 SOL, graduation ~410)
+  PUMP_MIN_INFLOW_SOL: 2, // SOL other traders put in since launch (excludes the dev's own buy)
+  PUMP_MAX_MCAP_SOL: 120, // "cheap": market cap at most this (launch is ~28 SOL, graduation ~410)
   PUMP_MIN_TICK_RISE_PCT: 1, // must be climbing right now: up this much vs. ~4 seconds ago
   PUMP_MAX_DEV_PCT: 10, // skip if the creator bought more than this % of supply at launch
   PUMP_REQUIRE_SOCIALS: 1, // 1 = needs a Twitter, Telegram or website link in its metadata
