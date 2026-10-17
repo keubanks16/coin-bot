@@ -35,6 +35,14 @@ putting in.
 - **Stalled:** nobody has bought for 45 seconds
 - **Max hold:** 10 minutes, or the moment the coin graduates off the bonding curve
 
+**Graduation exits:** once the curve is complete, paper positions and shadow trades wait for
+a fresh Jupiter sell quote for the full holding into USDC. The simulator uses that quote
+minus the 3% paper haircut, never the completed bonding curve. If migration is still pending
+or no valid route exists, the position stays open and the bot retries; it credits no cash or
+learning outcome. Open positions retain their last valuation while waiting (not a guaranteed
+exit value). The pending graduation state survives restarts. These are simulated quote-based
+fills, not confirmed transactions or a guarantee of live execution.
+
 It never buys the same coin twice, and stops buying for the day after a −6% day.
 
 **Learning from its mistakes.** Every coin that passes the filters becomes a lesson, whether the
@@ -227,4 +235,5 @@ the public endpoint for balance checks.
 - **`order not buildable ... code 1`.** The wallet doesn't hold enough USDC.
 - **Jupiter `401`/`403`.** Check `JUPITER_API_KEY`.
 - **Logs.** Run `npx wrangler tail` to watch the bot in real time.
+
 
