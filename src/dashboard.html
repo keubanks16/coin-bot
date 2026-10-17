@@ -104,7 +104,7 @@
   function signed(n) { return (n >= 0 ? '+' : '−') + usd(Math.abs(n)); }
   function pct(n) { return (n >= 0 ? '+' : '−') + Math.abs(n * 100).toFixed(1) + '%'; }
   function cls(n) { return n > 0 ? 'up' : n < 0 ? 'down' : ''; }
-  function ago(ts) { var m = Math.round((Date.now() - ts) / 60000); if (m < 60) return m + 'm'; var h = Math.round(m / 60); return h < 48 ? h + 'h' : Math.round(h / 24) + 'd'; }
+  function ago(ts) { var sec = Math.round((Date.now() - ts) / 1000); if (sec < 90) return Math.max(sec, 0) + 's'; var m = Math.round(sec / 60); if (m < 60) return m + 'm'; var h = Math.round(m / 60); return h < 48 ? h + 'h' : Math.round(h / 24) + 'd'; }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   function px(n) { return n >= 1 ? n.toFixed(4) : n.toPrecision(4); }
 
@@ -177,6 +177,16 @@
     }).join('') : '<div class="empty">Nothing yet.</div>';
 
     var r = s.rules;
+    if (r.pump) {
+      var q = r.pump, st2 = q.status, pc = function (x) { return Math.round(x * 100) + '%'; };
+      var feed = !st2 ? 'starting…' : (st2.feed === 'connected' ? 'live feed connected' : 'feed: ' + esc(st2.feed)) +
+        ' · ' + st2.seen + ' new coins seen · watching ' + st2.watching + (st2.lastCoinAt ? ' · last new coin ' + ago(st2.lastCoinAt) + ' ago' : '');
+      $('rules').innerHTML = '<b>Pump.fun sniper</b> · ' + feed + '<br>Buys ' + usd(q.tradeUsd) + ' (up to ' + q.maxPositions + ' at once) of coins under ' +
+        Math.round(q.maxAge / 60) + ' min old with ' + q.minInflow + '+ SOL of buying, market cap under ' + q.maxMcap + ' SOL, still climbing, creator under ' +
+        q.maxDev + '% of supply' + (q.socials ? ', with social links' : '') + ' · sells on the first ' + pc(q.downturn) + ' drop from the peak (once up ' + pc(q.arm) +
+        '), −' + pc(q.stopLoss) + ' stop, ' + q.stall + 's with no buyers, or ' + q.maxHold + ' min · re-checks every ' + q.poll + 's · stops buying after −' + pc(q.dailyLossLimit) + ' in a day';
+      return;
+    }
     var p1 = function (x) { return (Math.round(x * 1000) / 10) + '%'; };
     var hold = r.maxHoldHours < 2 ? Math.round(r.maxHoldHours * 60) + 'm' : r.maxHoldHours + 'h';
     $('rules').innerHTML = '<b>Rules</b> · ' + esc(r.strategy || 'scalp') + ' · checks every ' + r.tickSeconds + 's, scans every ' + r.scanSeconds + 's · up to ' +

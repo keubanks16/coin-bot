@@ -7,6 +7,7 @@ import { Store } from './store.js';
 import { loadKeypair, signTransaction } from './solana.js';
 import { loadConfig, safetyReject, entryScore, exitDecision, positionSize, costReject } from './strategy.js';
 import { adaptiveFactor, learnOutcome } from './adaptive.js';
+import { sellPumpPosition } from './pump.js';
 
 const toUnits = (raw, decimals) => Number(BigInt(raw)) / 10 ** decimals;
 const fmt = (n) => `$${Number(n).toFixed(2)}`;
@@ -99,6 +100,7 @@ async function priceOpenPositions(ctx, positions) {
 
 export async function sellPosition(ctx, pos, reason) {
   const { store, mode } = ctx;
+  if (await store.get(`pump_curve_${pos.mint}`)) return sellPumpPosition(ctx, pos, reason);
   let qty = BigInt(pos.qty_raw);
   if (ctx.cfg.LIVE) {
     const held = BigInt(await ctx.rpc.tokenBalanceRaw(ctx.wallet.publicKey, pos.mint));
@@ -230,6 +232,7 @@ export async function runCycle(env, { forceScan = false } = {}) {
   const ctx = await makeContext(env);
   const { store, cfg, mode } = ctx;
   const now = Date.now();
+  if (cfg.STRATEGY === 'pump') return { mode, strategy: 'pump', skipped: 'pump mode runs in the fast loop' };
 
   const lock = await store.get('lock', 0);
   if (now - lock < LOCK_STALE_MS) return { skipped: 'another cycle is running' };

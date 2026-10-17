@@ -31,8 +31,24 @@ database_id = "96bb9edb-44e5-453a-a54f-74dea3cd4960"
 LIVE_TRADING = "false"
 PAPER_START_USD = "1000"
 
-# "scalp" (fast in-and-out, default) or "momentum" (the original slower 1h swing strategy).
-STRATEGY = "scalp"
+# "pump" (snipe brand-new pump.fun coins, paper only), "scalp" (fast in-and-out on established
+# coins) or "momentum" (the original slower 1h swing strategy).
+STRATEGY = "pump"
+
+# Pump.fun sniper (only used when STRATEGY = "pump"; full list in src/strategy.js)
+PUMP_TRADE_USD = "20"
+PUMP_MAX_POSITIONS = "3"
+PUMP_POLL_SECONDS = "2"
+PUMP_MAX_AGE_SEC = "180"
+PUMP_MIN_INFLOW_SOL = "3"
+PUMP_MAX_MCAP_SOL = "90"
+PUMP_MAX_DEV_PCT = "10"
+PUMP_REQUIRE_SOCIALS = "1"
+PUMP_STOP_LOSS_PCT = "0.25"
+PUMP_TRAIL_ARM_PCT = "0.05"
+PUMP_DOWNTURN_PCT = "0.12"
+PUMP_STALL_SEC = "45"
+PUMP_MAX_HOLD_MIN = "10"
 
 # Speed. The free Jupiter key allows 1 request/sec, so these are tuned to stay inside it.
 # If you upgrade your Jupiter key, raise JUP_RPS (e.g. "10") and you can lower the others.
@@ -59,6 +75,7 @@ MAX_HOLD_HOURS = "1"
 # Only trade tokens cheap enough to scalp: buying and selling right back must cost <= 0.6%.
 MAX_ROUNDTRIP_COST_PCT = "0.006"
 
+# Recommended for pump mode (it reads the chain every 2 seconds): a free Helius RPC URL.
 # Optional: a paid/dedicated RPC is more reliable than the public one in live mode
 # SOLANA_RPC_URL = "https://mainnet.helius-rpc.com/?api-key=..."
 
