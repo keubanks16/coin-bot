@@ -8,6 +8,7 @@ import { loadKeypair, signTransaction } from './solana.js';
 import { loadConfig, safetyReject, entryScore, exitDecision, positionSize, costReject } from './strategy.js';
 import { adaptiveFactor, learnOutcome } from './adaptive.js';
 import { sellPumpPosition } from './pump.js';
+import { sellGradPosition, isGradPosition } from './grad.js';
 
 const toUnits = (raw, decimals) => Number(BigInt(raw)) / 10 ** decimals;
 const fmt = (n) => `$${Number(n).toFixed(2)}`;
@@ -101,6 +102,7 @@ async function priceOpenPositions(ctx, positions) {
 export async function sellPosition(ctx, pos, reason) {
   const { store, mode } = ctx;
   if (await store.get(`pump_curve_${pos.mint}`)) return sellPumpPosition(ctx, pos, reason);
+  if (await isGradPosition(store, pos.mint)) return sellGradPosition(ctx, pos, reason);
   let qty = BigInt(pos.qty_raw);
   if (ctx.cfg.LIVE) {
     const held = BigInt(await ctx.rpc.tokenBalanceRaw(ctx.wallet.publicKey, pos.mint));
