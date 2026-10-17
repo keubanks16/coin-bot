@@ -2,19 +2,41 @@
 // Default is the free public endpoint; a Helius/QuickNode URL is more reliable.
 
 export class Rpc {
+  static start = 0;
+
   constructor(env) {
-    this.url = env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+    // Your own URL first (SOLANA_RPC_URL, e.g. a free Helius key), then free public endpoints.
+    // The official public endpoint blocks some cloud providers, so it goes last.
+    this.urls = [env.SOLANA_RPC_URL, 'https://solana-rpc.publicnode.com', 'https://api.mainnet-beta.solana.com'].filter(Boolean);
+    this.url = this.urls[0];
   }
 
   async call(method, params) {
-    const res = await fetch(this.url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-    });
-    const body = await res.json();
-    if (body.error) throw new Error(`RPC ${method}: ${body.error.message}`);
-    return body.result;
+    let lastErr;
+    for (let i = 0; i < this.urls.length; i++) {
+      const url = this.urls[(Rpc.start + i) % this.urls.length];
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+        });
+        const text = await res.text();
+        let body;
+        try {
+          body = JSON.parse(text);
+        } catch {
+          throw new Error(`HTTP ${res.status}: ${text.slice(0, 120)}`);
+        }
+        if (body.error) throw new Error(`RPC ${method}: ${body.error.message}`);
+        // Remember the endpoint that worked, so the next call starts there.
+        Rpc.start = (Rpc.start + i) % this.urls.length;
+        return body.result;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw lastErr;
   }
 
   /** Raw account data (Uint8Array, or null if missing) for up to 100 accounts in one call. */

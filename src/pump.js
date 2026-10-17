@@ -321,6 +321,10 @@ export class PumpEngine {
 
   async #tick(ctx, now) {
     const { store, cfg, mode } = ctx;
+    if (now - this.lastStatusAt >= 10e3) {
+      this.lastStatusAt = now;
+      await store.set('pump_status', { feed: this.feedState, seen: this.seen, watching: this.watch.size, lastCoinAt: this.lastCoinAt, at: now });
+    }
     if (cfg.LIVE) {
       await this.warn(ctx, 'live', 'Pump mode is paper-only for now. Set LIVE_TRADING = "false" or use another STRATEGY.', 3600e3);
       return { skipped: 'live' };
@@ -348,7 +352,7 @@ export class PumpEngine {
       try {
         samples = (await ctx.rpc.multipleAccounts(keys)).map(decodeCurve);
       } catch (e) {
-        await this.warn(ctx, 'rpc', `Solana RPC: ${e.message} (set SOLANA_RPC_URL to a free Helius URL)`);
+        await this.warn(ctx, 'rpc', `Solana RPC: ${e.message} (all endpoints failed; set SOLANA_RPC_URL to a free Helius URL)`);
         return { error: 'rpc' };
       }
     }
@@ -444,10 +448,6 @@ export class PumpEngine {
       }
     }
 
-    if (now - this.lastStatusAt >= 10e3) {
-      this.lastStatusAt = now;
-      await store.set('pump_status', { feed: this.feedState, seen: this.seen, watching: this.watch.size, lastCoinAt: this.lastCoinAt, at: now });
-    }
     return { mode, equity, cash, positions: positions.length, watching: this.watch.size, bought, paused, halted };
   }
 }
