@@ -17,6 +17,17 @@ export class Rpc {
     return body.result;
   }
 
+  /** Raw account data (Uint8Array, or null if missing) for up to 100 accounts in one call. */
+  async multipleAccounts(keys, commitment = 'processed') {
+    const out = [];
+    for (let i = 0; i < keys.length; i += 100) {
+      const chunk = keys.slice(i, i + 100);
+      const r = await this.call('getMultipleAccounts', [chunk, { encoding: 'base64', commitment }]);
+      for (const acc of r.value || []) out.push(acc ? Uint8Array.from(atob(acc.data[0]), (c) => c.charCodeAt(0)) : null);
+    }
+    return out;
+  }
+
   async solBalance(owner) {
     const r = await this.call('getBalance', [owner, { commitment: 'confirmed' }]);
     return r.value / 1e9;
