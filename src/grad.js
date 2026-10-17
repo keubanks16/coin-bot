@@ -6,7 +6,7 @@
 // still getting real buying after that, and takes a small profit.
 //
 // 1. PumpPortal's free feed announces each graduation (same WebSocket as the sniper).
-// 2. It finds the coin's PumpSwap pool on-chain, then reads the pool's SOL and token balances
+// 2. It works out the coin's PumpSwap pool address (src/pda.js), then reads the pool's SOL and token balances
 //    every couple of seconds (batched with the sniper's reads) to see buying and price.
 // 3. Buys are priced with a real Jupiter quote (fees and price impact included) plus a small
 //    paper haircut; exits are watched from the pool's balances and sold with a real Jupiter quote.
@@ -16,6 +16,7 @@
 import { SOL, USDC, USDC_DECIMALS } from './jupiter.js';
 import { b58encode } from './solana.js';
 import { GRAD_FEATURES, learn, predict, summarize } from './learn.js';
+import { canonicalPumpPool } from './pda.js';
 
 export const AMM_PROGRAM = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
 const POOL_DISCRIMINATOR = [241, 154, 109, 4, 17, 177, 109, 188];
@@ -248,31 +249,16 @@ export class GradEngine {
     this.coins.set(m.mint, { mint: m.mint, symbol: symbol || m.symbol || m.mint.slice(0, 6), migratedAt: now, pool: null, lookups: 0, lastLookup: 0, hist: [], peak: 0 });
   }
 
+  /** Work out the coin's PumpSwap pool from its address (no RPC search needed), then read it. */
   async findPool(ctx, c, now) {
     c.lastLookup = now;
     c.lookups++;
-    const res = await ctx.rpc.call('getProgramAccounts', [
-      AMM_PROGRAM,
-      { encoding: 'base64', commitment: 'confirmed', filters: [{ memcmp: { offset: 43, bytes: c.mint } }, { memcmp: { offset: 75, bytes: SOL } }] },
-    ]);
-    const pools = (res || [])
-      .map((a) => ({ key: a.pubkey, p: decodePool(Uint8Array.from(atob(a.account.data[0]), (ch) => ch.charCodeAt(0))) }))
-      .filter((x) => x.p && x.p.baseMint === c.mint && x.p.quoteMint === SOL);
-    if (!pools.length) return false;
-    let best = pools[0];
-    if (pools.length > 1) {
-      // Pick the pool with the most SOL in it (the canonical migration pool).
-      const vaults = await ctx.rpc.multipleAccounts(pools.map((x) => x.p.quoteVault));
-      let bestQ = -1n;
-      pools.forEach((x, i) => {
-        const q = tokenAmount(vaults[i]) ?? 0n;
-        if (q > bestQ) {
-          bestQ = q;
-          best = x;
-        }
-      });
-    }
-    c.pool = { pool: best.key, baseVault: best.p.baseVault, quoteVault: best.p.quoteVault };
+    c.poolKey ??= (await canonicalPumpPool(c.mint)).pool;
+    const [bytes] = await ctx.rpc.multipleAccounts([c.poolKey], 'confirmed');
+    const p = decodePool(bytes);
+    if (!p) return false; // not created yet; try again shortly
+    if (p.baseMint !== c.mint || p.quoteMint !== SOL) throw new Error(`pool ${c.poolKey} is for a different coin`);
+    c.pool = { pool: c.poolKey, baseVault: p.baseVault, quoteVault: p.quoteVault };
     this.found++;
     return true;
   }
