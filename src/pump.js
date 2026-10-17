@@ -406,7 +406,9 @@ export class PumpEngine {
         c.socials = meta ? ['twitter', 'telegram', 'website'].filter((k) => meta[k]).length : 0;
         if (!c.socials) reason = 'no social links';
       } catch {
-        reason = 'metadata unavailable';
+        // The info servers are often slow or block cloud servers. Not knowing isn't a red flag,
+        // so don't skip the coin over it (the creator check below still applies).
+        c.socials = null;
       }
     }
     if (!reason && c.dev && c.devTokensRaw > 0n) {
@@ -596,7 +598,7 @@ export class PumpEngine {
       dayStart = equity;
       await store.set(dk, equity);
     }
-    const halted = dayStart > 0 && equity / dayStart - 1 <= -cfg.DAILY_LOSS_LIMIT_PCT;
+    const halted = dayStart > 0 && equity / dayStart - 1 <= -cfg.PUMP_DAILY_LOSS_LIMIT_PCT;
     if (halted && !(await store.get(`${dk}_halt_logged`))) {
       await store.set(`${dk}_halt_logged`, true);
       await store.log('warn', `Daily loss limit hit. No new buys until tomorrow (UTC).`);

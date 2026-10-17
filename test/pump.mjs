@@ -256,6 +256,18 @@ await test('dashboard Sell button sells a pump position at the curve price', asy
   assert.equal((await sellPosition(ctx, pos, 'manual')).ok, false, 'no double sell');
 });
 
+await test('does not skip a coin just because its metadata cannot be loaded', async () => {
+  const { DB, world, engine, tick } = await setup();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => (new URL(url).hostname === 'meta.test' ? new Response('down', { status: 503 }) : realFetch(url, init));
+  const t0 = Date.now();
+  const c = launch(world, engine, 'NOMETA', t0);
+  for (let i = 1; i <= 8; i++) { trade(c, 0.5); await tick(t0 + i * 2000); }
+  globalThis.fetch = realFetch;
+  assert.equal(trades(DB).length, 1);
+  assert.doesNotMatch(events(DB), /metadata unavailable/);
+});
+
 await test('pump mode refuses to trade live', async () => {
   const { DB, world, engine } = await setup();
   const t0 = Date.now();
@@ -329,7 +341,7 @@ await test('once trained, skips setups it has learned lose, and still buys ones 
   let m = emptyModel();
   for (let i = 0; i < 20; i++) m = learn(m, { ...young, age: 12 }, -0.33);
   for (let i = 0; i < 20; i++) m = learn(m, { ...young, age: 60 }, 0.3);
-  const { DB, world, engine, tick } = await setup({ LEARN_MIN_LESSONS: '10' });
+  const { DB, world, engine, tick } = await setup({ LEARN_MIN_LESSONS: '10', PUMP_MIN_INFLOW_SOL: '3' });
   DB.raw.prepare("INSERT INTO state (k, v) VALUES ('pump_model_v2', ?)").run(JSON.stringify(m));
   const t0 = Date.now();
   const fast = launch(world, engine, 'FAST', t0);
