@@ -206,6 +206,27 @@
               '</td><td class="r ' + cls(b.usd) + '">' + signed(b.usd) + '</td><td class="r">' + Math.round(b.winRate * 100) + '%</td></tr>';
           }).join('') + '</table>';
       }
+      var G = q.grad;
+      if (G) {
+        var gs = G.status;
+        lh += '<br><br><b>Graduated coins</b> · ' + (!gs ? 'starting…' : gs.seen + ' graduations seen' + (gs.lastGradAt ? ' (last ' + ago(gs.lastGradAt) + ' ago)' : '') + ' · ' + gs.found + ' pools found · watching ' + gs.watching + (gs.shadows ? ' · following ' + gs.shadows : '')) +
+          '<br>Waits ' + G.wait + 's after a coin graduates, then buys ' + usd(G.tradeUsd) + ' (up to ' + G.maxPositions + ' at once) if it\'s still within ' + G.maxAge + ' min, the pool has ' + G.minLiq + '+ SOL, ' + G.minInflow +
+          '+ SOL went in over the last minute and it\'s climbing · takes profit at +' + usd(G.takeProfitUsd) + ' · otherwise sells on a ' + pc(G.downturn) + ' drop from the peak (once up ' + pc(G.arm) + '), −' + pc(G.stopLoss) + ' stop, ' + G.stall + 's with no buyers, or ' + G.maxHold + ' min · real Jupiter quotes for every buy and sell';
+        var GL = gs && gs.learn;
+        if (GL && GL.lessons) {
+          lh += '<br>Learned from ' + GL.lessons + ' graduates (' + GL.real + ' real, ' + GL.shadow + ' followed) · average ' + lp(GL.avg) + ', ' + Math.round(GL.winRate * 100) + '% winners';
+          if (GL.best && GL.best.length) lh += '<div style="margin-top:6px"><b class="up">Works best</b>' + GL.best.map(row).join('') + '</div>';
+          if (GL.worst && GL.worst.length) lh += '<div style="margin-top:6px"><b class="down">Works worst</b>' + GL.worst.map(row).join('') + '</div>';
+        }
+        var GB = gs && gs.board;
+        if (GB && GB.length) {
+          lh += '<div style="margin-top:6px"><b>Which profit target works</b> (' + GB[0].n + ' graduates)</div><table><tr><th>Sell at</th><th class="r">Avg per trade</th><th class="r">Winners</th></tr>' +
+            GB.map(function (b) {
+              return '<tr' + (b.active ? ' style="font-weight:600"' : '') + '><td>' + (b.target === null ? 'No target' : '+' + b.target + '% (' + usd(G.tradeUsd * b.target / 100) + ')') + (b.active ? ' ← now' : '') +
+                '</td><td class="r ' + cls(b.usd) + '">' + signed(b.usd) + '</td><td class="r">' + Math.round(b.winRate * 100) + '%</td></tr>';
+            }).join('') + '</table>';
+        }
+      }
       $('rules').innerHTML += lh;
       return;
     }

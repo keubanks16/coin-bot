@@ -23,18 +23,28 @@ export const FEATURES = {
   hour: { label: 'hour (UTC)', unit: 'h', edges: [6, 12, 18] },
 };
 
+/** Setup features for graduated coins (see src/grad.js). */
+export const GRAD_FEATURES = {
+  since: { label: 'time since graduating', unit: 's', edges: [90, 180, 420] },
+  inflow: { label: 'SOL bought last minute', unit: ' SOL', edges: [3, 6, 12] },
+  liq: { label: 'pool size', unit: ' SOL', edges: [70, 100, 150] },
+  rise: { label: '10s climb', unit: '%', edges: [1, 3, 6] },
+  dip: { label: 'drop from post-graduation high', unit: '%', edges: [5, 15, 30] },
+  hour: { label: 'hour (UTC)', unit: 'h', edges: [6, 12, 18] },
+};
+
 const SHRINK = 15; // a bucket needs about this many lessons before its own average dominates
 const DAMPEN = 0.5; // features overlap, so only add half of each bucket's effect
 
-export function bucketOf(name, value) {
-  const { edges } = FEATURES[name];
+export function bucketOf(name, value, spec = FEATURES) {
+  const { edges } = spec[name];
   let i = 0;
   while (i < edges.length && value >= edges[i]) i++;
   return i;
 }
 
-export function bucketLabel(name, b) {
-  const { label, unit, edges } = FEATURES[name];
+export function bucketLabel(name, b, spec = FEATURES) {
+  const { label, unit, edges } = spec[name];
   if (b === 0) return `${label} under ${edges[0]}${unit}`;
   if (b === edges.length) return `${label} ${edges[edges.length - 1]}${unit}+`;
   return `${label} ${edges[b - 1]}–${edges[b]}${unit}`;
@@ -59,16 +69,16 @@ export function emptyModel() {
 }
 
 /** Add one finished lesson. `ret` is the fractional return after fees (−0.3 = −30%). */
-export function learn(model, feats, ret, kind = 'shadow') {
+export function learn(model, feats, ret, kind = 'shadow', spec = FEATURES) {
   const m = model && model.b ? model : emptyModel();
   const r = Math.max(-1, Math.min(ret, 1)); // cap at +100% so a rare moonshot can't dominate the averages
   m.n++;
   m[kind === 'real' ? 'real' : 'shadow']++;
   m.sum += r;
   if (ret > 0) m.wins++;
-  for (const name of Object.keys(FEATURES)) {
+  for (const name of Object.keys(spec)) {
     if (feats[name] === undefined || feats[name] === null) continue;
-    const key = `${name}:${bucketOf(name, feats[name])}`;
+    const key = `${name}:${bucketOf(name, feats[name], spec)}`;
     const s = (m.b[key] ||= { n: 0, sum: 0, wins: 0 });
     s.n++;
     s.sum += r;
@@ -80,33 +90,33 @@ export function learn(model, feats, ret, kind = 'shadow') {
 const shrunk = (s, mean) => (s.sum + SHRINK * mean) / (s.n + SHRINK);
 
 /** Expected return for a setup, and the strongest reasons for it. */
-export function predict(model, feats) {
+export function predict(model, feats, spec = FEATURES) {
   if (!model || !model.n) return { expected: null, reasons: [] };
   const mean = model.sum / model.n;
   let expected = mean;
   const reasons = [];
-  for (const name of Object.keys(FEATURES)) {
+  for (const name of Object.keys(spec)) {
     if (feats[name] === undefined || feats[name] === null) continue;
-    const b = bucketOf(name, feats[name]);
+    const b = bucketOf(name, feats[name], spec);
     const s = model.b[`${name}:${b}`];
     if (!s) continue;
     const effect = (shrunk(s, mean) - mean) * DAMPEN;
     expected += effect;
-    reasons.push({ label: bucketLabel(name, b), effect, n: s.n });
+    reasons.push({ label: bucketLabel(name, b, spec), effect, n: s.n });
   }
   reasons.sort((a, b) => Math.abs(b.effect) - Math.abs(a.effect));
   return { expected, reasons };
 }
 
 /** Plain-language summary for the dashboard: best and worst setups seen so far. */
-export function summarize(model, minN = 5) {
+export function summarize(model, minN = 5, spec = FEATURES) {
   if (!model || !model.n) return { lessons: 0 };
   const mean = model.sum / model.n;
   const rows = Object.entries(model.b)
     .filter(([, s]) => s.n >= minN)
     .map(([key, s]) => {
       const [name, b] = key.split(':');
-      return { label: bucketLabel(name, Number(b)), n: s.n, avg: s.sum / s.n, winRate: s.wins / s.n, score: shrunk(s, mean) };
+      return { label: bucketLabel(name, Number(b), spec), n: s.n, avg: s.sum / s.n, winRate: s.wins / s.n, score: shrunk(s, mean) };
     })
     .sort((a, b) => b.score - a.score);
   return {
