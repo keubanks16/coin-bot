@@ -87,7 +87,7 @@ async function getState(env) {
         downturn: cfg.PUMP_DOWNTURN_PCT,
         stall: cfg.PUMP_STALL_SEC,
         maxHold: cfg.PUMP_MAX_HOLD_MIN,
-        dailyLossLimit: cfg.DAILY_LOSS_LIMIT_PCT,
+        dailyLossLimit: cfg.PUMP_DAILY_LOSS_LIMIT_PCT,
         status: await store.get('pump_status', null),
         grad: cfg.GRAD_ENABLED ? {
           tradeUsd: cfg.GRAD_TRADE_USD, maxPositions: cfg.GRAD_MAX_POSITIONS, wait: cfg.GRAD_MIN_WAIT_SEC, maxAge: cfg.GRAD_MAX_AGE_MIN,
