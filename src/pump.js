@@ -11,7 +11,7 @@
 // Paper mode only for now: prices come from the real on-chain bonding curve with pump.fun's
 // fees and an extra per-side haircut for being slower than dedicated sniper bots.
 
-import { SOL } from './jupiter.js';
+import { SOL, USDC, USDC_DECIMALS } from './jupiter.js';
 import { featuresOf, learn, predict, summarize } from './learn.js';
 
 const CURVE_DISCRIMINATOR = [23, 183, 248, 55, 96, 216, 172, 96];
@@ -19,8 +19,15 @@ const TOKEN_DECIMALS = 6;
 const FEED_URL = 'https://pumpportal.fun/api/data';
 const fmt = (n) => `$${Number(n).toFixed(2)}`;
 const curveKeyName = (mint) => `pump_curve_${mint}`;
+const migrationKeyName = (mint) => `pump_migrated_${mint}`;
 const featKeyName = (mint) => `pump_feat_${mint}`;
-const MODEL_KEY = 'pump_model';
+// v2: lessons are measured under the take-profit exit rules, so the v1 lessons (no take
+// profit) are kept under 'pump_model' but no longer used.
+const MODEL_KEY = 'pump_model_v2';
+const BOARD_KEY = 'pump_tp_board';
+/** Take-profit targets (as a fraction of the buy) that every followed coin is scored against. */
+export const TP_LEVELS = [0.1, 0.15, 0.25, 0.4, 0.6];
+const tpKey = (l) => (l === null ? 'none' : String(Math.round(l * 100)));
 const dayKey = (mode, now) => `day_start_${mode}_${new Date(now).toISOString().slice(0, 10)}`;
 
 // ---- bonding curve ------------------------------------------------------------------------
@@ -91,10 +98,11 @@ export function pumpEntry(c, s, cfg, now) {
 }
 
 /** Should we sell this position? `price` and `peak` are per-token USD you'd really get. */
-export function pumpExit(pos, price, peak, s, lastUpAt, cfg, now) {
+export function pumpExit(pos, price, peak, s, lastUpAt, cfg, now, takeProfitPct = null) {
   const pnl = price / pos.entry_price - 1;
   const peakGain = peak / pos.entry_price - 1;
   if (s.complete) return 'graduated';
+  if (takeProfitPct !== null && pnl >= takeProfitPct) return 'take profit';
   if (pnl <= -cfg.PUMP_STOP_LOSS_PCT) return 'stop loss';
   if (peakGain >= cfg.PUMP_TRAIL_ARM_PCT && price <= peak * (1 - cfg.PUMP_DOWNTURN_PCT)) return 'first downturn';
   if (now - lastUpAt >= cfg.PUMP_STALL_SEC * 1000) return 'stalled';
@@ -125,12 +133,26 @@ async function adjustPaperCash(ctx, delta) {
   await ctx.store.set('paper_cash', Math.round((cash + delta) * 1e6) / 1e6);
 }
 
+/** Quote the entire simulated holding after migration. Never use the completed curve. */
+async function migratedValueUsd(ctx, mint, qtyRaw) {
+  const q = await ctx.jup.order({ inputMint: mint, outputMint: USDC, amount: String(qtyRaw) });
+  if (!q || q.error || q.errorCode != null || q.inputMint !== mint || q.outputMint !== USDC ||
+      !/^\d+$/.test(String(q.inAmount)) || BigInt(q.inAmount) !== BigInt(qtyRaw) ||
+      !/^\d+$/.test(String(q.outAmount)) || BigInt(q.outAmount) <= 0n) {
+    throw new Error('no valid full-size post-migration sell quote');
+  }
+  // The quote already includes swap fees/impact; apply only the paper execution haircut.
+  return Number(haircut(BigInt(q.outAmount), ctx.cfg.PUMP_PAPER_SLIPPAGE_BPS)) / 10 ** USDC_DECIMALS;
+}
+
 /** Sell a pump position at the current curve price (also used by the dashboard's Sell buttons). */
 export async function sellPumpPosition(ctx, pos, reason, sample = null) {
   const { store, mode, cfg } = ctx;
+  if (cfg.LIVE) return { ok: false, error: 'pump exits are paper-only' };
   if (!(await store.position(mode, pos.mint))) return { ok: false, error: 'already sold' };
+  let migrated = await store.get(migrationKeyName(pos.mint), false);
   let s = sample;
-  if (!s) {
+  if (!s && !migrated) {
     const curve = await store.get(curveKeyName(pos.mint));
     try {
       s = decodeCurve((await ctx.rpc.multipleAccounts([curve], 'confirmed'))[0]);
@@ -139,19 +161,39 @@ export async function sellPumpPosition(ctx, pos, reason, sample = null) {
       return { ok: false, error: e.message };
     }
   }
-  const solUsd = await solPrice(ctx, solCache);
-  if (!s || !solUsd) {
+  if (s?.complete && !migrated) {
+    migrated = true;
+    await store.set(migrationKeyName(pos.mint), true);
+  }
+  const solUsd = migrated ? null : await solPrice(ctx, solCache);
+  if (!migrated && (!s || !solUsd)) {
     await store.log('error', `SELL ${pos.symbol} failed (${reason}): no curve or SOL price`);
     return { ok: false, error: 'no price' };
   }
   const qty = BigInt(pos.qty_raw);
-  const proceeds = sellValueUsd(s, qty, cfg, solUsd);
+  let proceeds;
+  if (migrated) {
+    try {
+      proceeds = await migratedValueUsd(ctx, pos.mint, qty);
+    } catch (e) {
+      const key = `pump_migration_warn_${pos.mint}`;
+      const now = Date.now();
+      if (now - (await store.get(key, 0)) >= 60e3) {
+        await store.set(key, now);
+        await store.log('warn', `SELL ${pos.symbol}: waiting for post-migration sell route (${e.message}); position remains open`);
+      }
+      return { ok: false, pending: true, error: 'waiting for post-migration sell route' };
+    }
+  } else {
+    proceeds = sellValueUsd(s, qty, cfg, solUsd);
+  }
   const pnl = proceeds - pos.cost_usd;
   const price = proceeds / (Number(qty) / 10 ** TOKEN_DECIMALS);
   await adjustPaperCash(ctx, proceeds);
   await store.closePosition(mode, pos.mint);
   await store.addTrade({ mode, side: 'sell', mint: pos.mint, symbol: pos.symbol, usd: proceeds, qty_raw: pos.qty_raw, price, pnl_usd: pnl, reason, sig: null });
   await store.set(curveKeyName(pos.mint), null);
+  await store.set(migrationKeyName(pos.mint), null);
   await store.setCooldown(mode, pos.mint, Date.now() + 24 * 3600e3);
   const feats = await store.get(featKeyName(pos.mint));
   if (feats) {
@@ -164,6 +206,29 @@ export async function sellPumpPosition(ctx, pos, reason, sample = null) {
 }
 
 /** Record a finished lesson in the shared model (read-modify-write, so dashboard sells count too). */
+/** Add one followed coin's results under every take-profit target to the scoreboard. */
+async function saveBoard(store, results) {
+  const board = (await store.get(BOARD_KEY, null)) || {};
+  for (const [k, r] of Object.entries(results)) {
+    const b = (board[k] ||= { n: 0, sum: 0, wins: 0 });
+    b.n++;
+    b.sum += r;
+    if (r > 0) b.wins++;
+  }
+  await store.set(BOARD_KEY, board);
+  return board;
+}
+
+/** Scoreboard rows for the dashboard: what each take-profit target would have returned. */
+export function boardRows(board, tradeUsd, activePct) {
+  if (!board) return [];
+  return Object.entries(board)
+    .map(([k, b]) => ({ target: k === 'none' ? null : Number(k), n: b.n, avg: b.sum / b.n, usd: (b.sum / b.n) * tradeUsd, winRate: b.wins / b.n, active: k === tpKey(activePct) }))
+    .sort((a, b) => (a.target ?? 1e9) - (b.target ?? 1e9));
+}
+
+const activeTp = (cfg, cost) => (cfg.PUMP_TAKE_PROFIT_USD > 0 ? cfg.PUMP_TAKE_PROFIT_USD / cost : null);
+
 async function saveLesson(store, feats, ret, kind) {
   const model = learn(await store.get(MODEL_KEY, null), feats, ret, kind);
   await store.set(MODEL_KEY, model);
@@ -236,13 +301,13 @@ export class PumpEngine {
   }
 
   /** Start following a coin without money. */
-  addShadow(c, s, feats, solUsd, cfg, now) {
+  addShadow(c, s, feats, solUsd, cfg, now, twin = false) {
     if (this.shadows.size >= cfg.PUMP_MAX_SHADOWS) return false;
     const usd = cfg.PUMP_TRADE_USD;
     const tokens = haircut(curveBuy(s, BigInt(Math.floor((usd / solUsd) * 1e9)), cfg.PUMP_FEE_BPS), cfg.PUMP_PAPER_SLIPPAGE_BPS);
     if (tokens <= 0n) return false;
     const entry = usd / (Number(tokens) / 10 ** TOKEN_DECIMALS);
-    this.shadows.set(c.mint, { symbol: c.symbol, curve: c.curve, feats, tokens, cost: usd, entry_price: entry, peak: entry, opened_at: now, lastVSol: s.vSol, lastUpAt: now });
+    this.shadows.set(c.mint, { symbol: c.symbol, curve: c.curve, feats, tokens, cost: usd, entry_price: entry, peak: entry, opened_at: now, lastVSol: s.vSol, lastUpAt: now, twin, tp: {} });
     return true;
   }
 
@@ -382,6 +447,7 @@ export class PumpEngine {
       await store.set('pump_status', {
         feed: this.feedState, seen: this.seen, watching: this.watch.size, shadows: this.shadows.size,
         lastCoinAt: this.lastCoinAt, at: now, learn: summarize(model), learnMin: cfg.LEARN_MIN_LESSONS,
+        board: boardRows(this.board ?? (this.board = await store.get(BOARD_KEY, null)), cfg.PUMP_TRADE_USD, activeTp(cfg, cfg.PUMP_TRADE_USD)),
       });
     }
     if (cfg.LIVE) {
@@ -429,13 +495,23 @@ export class PumpEngine {
       const [mint, h] = heldList[i];
       const s = samples[i];
       const p = byMint.get(mint);
-      if (!s || !p) continue;
+      if (!p) continue;
+      if (s?.complete || await store.get(migrationKeyName(mint), false)) {
+        const result = await sellPumpPosition(ctx, p, 'graduated', s);
+        if (result.ok) this.held.delete(mint);
+        else heldValue += (Number(BigInt(p.qty_raw)) / 10 ** p.decimals) * (p.last_price || p.entry_price);
+        continue;
+      }
+      if (!s) {
+        heldValue += (Number(BigInt(p.qty_raw)) / 10 ** p.decimals) * (p.last_price || p.entry_price);
+        continue;
+      }
       if (h.lastVSol === null || s.vSol > h.lastVSol) h.lastUpAt = now;
       h.lastVSol = s.vSol;
       const value = sellValueUsd(s, BigInt(p.qty_raw), cfg, solUsd);
       const price = value / (Number(BigInt(p.qty_raw)) / 10 ** TOKEN_DECIMALS);
       const peak = Math.max(p.peak_price || p.entry_price, price);
-      const reason = pumpExit(p, price, peak, s, h.lastUpAt, cfg, now);
+      const reason = pumpExit(p, price, peak, s, h.lastUpAt, cfg, now, activeTp(cfg, p.cost_usd));
       if (reason) {
         await sellPumpPosition(ctx, p, reason, s);
         this.held.delete(mint);
@@ -450,6 +526,25 @@ export class PumpEngine {
     for (let i = 0; i < shadowList.length; i++) {
       const [mint, sh] = shadowList[i];
       const s = samples[heldList.length + watchList.length + i];
+      if (s?.complete) sh.migrated = true;
+      if (sh.migrated) {
+        try {
+          const value = await migratedValueUsd(ctx, mint, sh.tokens);
+          const ret = value / sh.cost - 1;
+          const active = activeTp(cfg, sh.cost);
+          const results = { none: ret };
+          for (const l of active !== null && !TP_LEVELS.includes(active) ? [...TP_LEVELS, active] : TP_LEVELS) results[tpKey(l)] = sh.tp[tpKey(l)] ?? ret;
+          this.board = await saveBoard(store, results);
+          if (!sh.twin) {
+            this.model = await saveLesson(store, sh.feats, results[tpKey(active)] ?? ret, 'shadow');
+            this.modelAt = now;
+          }
+          this.shadows.delete(mint);
+        } catch {
+          // Migration/indexing can take time. No invented exit or lesson while no route exists.
+        }
+        continue;
+      }
       if (!s) {
         if (now - sh.opened_at > cfg.PUMP_MAX_HOLD_MIN * 60e3 * 2) this.shadows.delete(mint);
         continue;
@@ -459,9 +554,20 @@ export class PumpEngine {
       const value = sellValueUsd(s, sh.tokens, cfg, solUsd);
       const price = value / (Number(sh.tokens) / 10 ** TOKEN_DECIMALS);
       sh.peak = Math.max(sh.peak, price);
+      // Note the first moment each take-profit target would have been hit...
+      const ret = value / sh.cost - 1;
+      const active = activeTp(cfg, sh.cost);
+      const levels = active !== null && !TP_LEVELS.includes(active) ? [...TP_LEVELS, active] : TP_LEVELS;
+      for (const l of levels) if (sh.tp[tpKey(l)] === undefined && ret >= l) sh.tp[tpKey(l)] = ret;
+      // ...and keep following it until the other exits fire, so higher targets get scored too.
       if (pumpExit(sh, price, sh.peak, s, sh.lastUpAt, cfg, now)) {
-        this.model = await saveLesson(store, sh.feats, value / sh.cost - 1, 'shadow');
-        this.modelAt = now;
+        const results = { none: ret };
+        for (const l of levels) results[tpKey(l)] = sh.tp[tpKey(l)] ?? ret;
+        this.board = await saveBoard(store, results);
+        if (!sh.twin) {
+          this.model = await saveLesson(store, sh.feats, results[tpKey(active)] ?? ret, 'shadow');
+          this.modelAt = now;
+        }
         this.shadows.delete(mint);
       }
     }
@@ -528,6 +634,7 @@ export class PumpEngine {
       if (canBuy && !learnedSkip) {
         if (await this.buy(ctx, c, pick.s, usd, solUsd, { ...pick, expected: trained ? pred.expected : null })) {
           await store.set(featKeyName(c.mint), feats);
+          this.addShadow(c, pick.s, feats, solUsd, cfg, now, true); // scores every target for this coin too
           slots--;
           bought++;
           available -= usd;
@@ -546,3 +653,4 @@ export class PumpEngine {
     return { mode, equity, cash, positions: positions.length, watching: this.watch.size, bought, paused, halted };
   }
 }
+
