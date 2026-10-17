@@ -51,6 +51,16 @@ PUMP_DOWNTURN_PCT = "0.12"
 PUMP_STALL_SEC = "45"
 PUMP_MAX_HOLD_MIN = "10"
 
+# Graduated coins (src/grad.js): runs next to the sniper in pump mode. Paper only.
+GRAD_ENABLED = "1"
+GRAD_TRADE_USD = "20"
+GRAD_MAX_POSITIONS = "3"
+GRAD_MIN_WAIT_SEC = "60"
+GRAD_MAX_AGE_MIN = "15"
+GRAD_MIN_INFLOW_SOL = "3"
+GRAD_TAKE_PROFIT_USD = "5"
+GRAD_STOP_LOSS_PCT = "0.15"
+
 # Learning (src/learn.js): after this many finished lessons (real trades + coins it followed
 # without buying), it only buys setups it expects to return more than LEARN_MIN_EDGE_PCT.
 LEARN_MIN_LESSONS = "30"
