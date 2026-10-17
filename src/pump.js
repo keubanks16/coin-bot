@@ -11,7 +11,7 @@
 // Paper mode only for now: prices come from the real on-chain bonding curve with pump.fun's
 // fees and an extra per-side haircut for being slower than dedicated sniper bots.
 
-import { SOL } from './jupiter.js';
+import { SOL, USDC, USDC_DECIMALS } from './jupiter.js';
 import { featuresOf, learn, predict, summarize } from './learn.js';
 
 const CURVE_DISCRIMINATOR = [23, 183, 248, 55, 96, 216, 172, 96];
@@ -19,6 +19,7 @@ const TOKEN_DECIMALS = 6;
 const FEED_URL = 'https://pumpportal.fun/api/data';
 const fmt = (n) => `$${Number(n).toFixed(2)}`;
 const curveKeyName = (mint) => `pump_curve_${mint}`;
+const migrationKeyName = (mint) => `pump_migrated_${mint}`;
 const featKeyName = (mint) => `pump_feat_${mint}`;
 const MODEL_KEY = 'pump_model';
 const dayKey = (mode, now) => `day_start_${mode}_${new Date(now).toISOString().slice(0, 10)}`;
@@ -125,12 +126,26 @@ async function adjustPaperCash(ctx, delta) {
   await ctx.store.set('paper_cash', Math.round((cash + delta) * 1e6) / 1e6);
 }
 
+/** Quote the entire simulated holding after migration. Never use the completed curve. */
+async function migratedValueUsd(ctx, mint, qtyRaw) {
+  const q = await ctx.jup.order({ inputMint: mint, outputMint: USDC, amount: String(qtyRaw) });
+  if (!q || q.error || q.errorCode != null || q.inputMint !== mint || q.outputMint !== USDC ||
+      !/^\d+$/.test(String(q.inAmount)) || BigInt(q.inAmount) !== BigInt(qtyRaw) ||
+      !/^\d+$/.test(String(q.outAmount)) || BigInt(q.outAmount) <= 0n) {
+    throw new Error('no valid full-size post-migration sell quote');
+  }
+  // The quote already includes swap fees/impact; apply only the paper execution haircut.
+  return Number(haircut(BigInt(q.outAmount), ctx.cfg.PUMP_PAPER_SLIPPAGE_BPS)) / 10 ** USDC_DECIMALS;
+}
+
 /** Sell a pump position at the current curve price (also used by the dashboard's Sell buttons). */
 export async function sellPumpPosition(ctx, pos, reason, sample = null) {
   const { store, mode, cfg } = ctx;
+  if (cfg.LIVE) return { ok: false, error: 'pump exits are paper-only' };
   if (!(await store.position(mode, pos.mint))) return { ok: false, error: 'already sold' };
+  let migrated = await store.get(migrationKeyName(pos.mint), false);
   let s = sample;
-  if (!s) {
+  if (!s && !migrated) {
     const curve = await store.get(curveKeyName(pos.mint));
     try {
       s = decodeCurve((await ctx.rpc.multipleAccounts([curve], 'confirmed'))[0]);
@@ -139,19 +154,39 @@ export async function sellPumpPosition(ctx, pos, reason, sample = null) {
       return { ok: false, error: e.message };
     }
   }
-  const solUsd = await solPrice(ctx, solCache);
-  if (!s || !solUsd) {
+  if (s?.complete && !migrated) {
+    migrated = true;
+    await store.set(migrationKeyName(pos.mint), true);
+  }
+  const solUsd = migrated ? null : await solPrice(ctx, solCache);
+  if (!migrated && (!s || !solUsd)) {
     await store.log('error', `SELL ${pos.symbol} failed (${reason}): no curve or SOL price`);
     return { ok: false, error: 'no price' };
   }
   const qty = BigInt(pos.qty_raw);
-  const proceeds = sellValueUsd(s, qty, cfg, solUsd);
+  let proceeds;
+  if (migrated) {
+    try {
+      proceeds = await migratedValueUsd(ctx, pos.mint, qty);
+    } catch (e) {
+      const key = `pump_migration_warn_${pos.mint}`;
+      const now = Date.now();
+      if (now - (await store.get(key, 0)) >= 60e3) {
+        await store.set(key, now);
+        await store.log('warn', `SELL ${pos.symbol}: waiting for post-migration sell route (${e.message}); position remains open`);
+      }
+      return { ok: false, pending: true, error: 'waiting for post-migration sell route' };
+    }
+  } else {
+    proceeds = sellValueUsd(s, qty, cfg, solUsd);
+  }
   const pnl = proceeds - pos.cost_usd;
   const price = proceeds / (Number(qty) / 10 ** TOKEN_DECIMALS);
   await adjustPaperCash(ctx, proceeds);
   await store.closePosition(mode, pos.mint);
   await store.addTrade({ mode, side: 'sell', mint: pos.mint, symbol: pos.symbol, usd: proceeds, qty_raw: pos.qty_raw, price, pnl_usd: pnl, reason, sig: null });
   await store.set(curveKeyName(pos.mint), null);
+  await store.set(migrationKeyName(pos.mint), null);
   await store.setCooldown(mode, pos.mint, Date.now() + 24 * 3600e3);
   const feats = await store.get(featKeyName(pos.mint));
   if (feats) {
@@ -429,7 +464,17 @@ export class PumpEngine {
       const [mint, h] = heldList[i];
       const s = samples[i];
       const p = byMint.get(mint);
-      if (!s || !p) continue;
+      if (!p) continue;
+      if (s?.complete || await store.get(migrationKeyName(mint), false)) {
+        const result = await sellPumpPosition(ctx, p, 'graduated', s);
+        if (result.ok) this.held.delete(mint);
+        else heldValue += (Number(BigInt(p.qty_raw)) / 10 ** p.decimals) * (p.last_price || p.entry_price);
+        continue;
+      }
+      if (!s) {
+        heldValue += (Number(BigInt(p.qty_raw)) / 10 ** p.decimals) * (p.last_price || p.entry_price);
+        continue;
+      }
       if (h.lastVSol === null || s.vSol > h.lastVSol) h.lastUpAt = now;
       h.lastVSol = s.vSol;
       const value = sellValueUsd(s, BigInt(p.qty_raw), cfg, solUsd);
@@ -450,6 +495,18 @@ export class PumpEngine {
     for (let i = 0; i < shadowList.length; i++) {
       const [mint, sh] = shadowList[i];
       const s = samples[heldList.length + watchList.length + i];
+      if (s?.complete) sh.migrated = true;
+      if (sh.migrated) {
+        try {
+          const value = await migratedValueUsd(ctx, mint, sh.tokens);
+          this.model = await saveLesson(store, sh.feats, value / sh.cost - 1, 'shadow');
+          this.modelAt = now;
+          this.shadows.delete(mint);
+        } catch {
+          // Migration/indexing can take time. No invented exit or lesson while no route exists.
+        }
+        continue;
+      }
       if (!s) {
         if (now - sh.opened_at > cfg.PUMP_MAX_HOLD_MIN * 60e3 * 2) this.shadows.delete(mint);
         continue;
@@ -546,3 +603,4 @@ export class PumpEngine {
     return { mode, equity, cash, positions: positions.length, watching: this.watch.size, bought, paused, halted };
   }
 }
+
