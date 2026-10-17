@@ -7,6 +7,7 @@ import { decodePool, reservesOf, tokenAmount, GradEngine, AMM_PROGRAM } from '..
 import { PumpEngine } from '../src/pump.js';
 import { makeContext, sellPosition } from '../src/bot.js';
 import { b58encode } from '../src/solana.js';
+import { canonicalPumpPool, isOnCurve } from '../src/pda.js';
 import { SOL, USDC } from '../src/jupiter.js';
 
 let passed = 0;
@@ -53,8 +54,8 @@ function tokenAccountBytes(amount) {
 import { b58decode as decode } from '../src/solana.js';
 
 /** A graduated coin's pool. trade(sol): someone buys (or sells, if negative) that much SOL. */
-function newPool(world, mint) {
-  const p = { mint, key: key(), baseVault: key(), quoteVault: key(), base: 206_900_000_000_000n, quote: 85_000_000_000n };
+async function newPool(world, mint) {
+  const p = { mint, key: (await canonicalPumpPool(mint)).pool, baseVault: key(), quoteVault: key(), base: 206_900_000_000_000n, quote: 85_000_000_000n };
   world.pools[mint] = p;
   return {
     p,
@@ -97,8 +98,10 @@ function installMock(world) {
         return reply({ result: [{ pubkey: p.key, account: { data: [Buffer.from(poolBytes({ mint, baseVault: p.baseVault, quoteVault: p.quoteVault })).toString('base64'), 'base64'] } }] });
       }
       if (body.method === 'getMultipleAccounts') {
+        if (world.rpcDown) return reply({ error: { message: 'Your IP or provider is blocked from this endpoint' } });
         const value = body.params[0].map((k) => {
           for (const p of Object.values(world.pools)) {
+            if (k === p.key && world.hidePool) return null;
             if (k === p.key) return { data: [Buffer.from(poolBytes({ mint: p.mint, baseVault: p.baseVault, quoteVault: p.quoteVault })).toString('base64'), 'base64'] };
             if (k === p.baseVault) return { data: [Buffer.from(tokenAccountBytes(p.base)).toString('base64'), 'base64'] };
             if (k === p.quoteVault) return { data: [Buffer.from(tokenAccountBytes(p.quote)).toString('base64'), 'base64'] };
@@ -155,11 +158,21 @@ await test('handles negative virtual quote reserves', () => {
   assert.equal(r.quote, 80_000_000_000n);
 });
 
+await test("works out a graduate's pool address the way pump.fun does", async () => {
+  // Real example from pump.fun's docs (PUMP_SWAP_README.md): canonical pool and its creator.
+  const r = await canonicalPumpPool('7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump');
+  assert.equal(r.pool, 'GseMAnNDvntR5uFePZ51yZBXzNSn7GdFPkfHwfr6d77J');
+  assert.equal(r.authority, '9XDYTfQKwW8sHPqnFdUreMmtmffmkHVPGTNV2e3LKxNW');
+  const { b58decode } = await import('../src/solana.js');
+  assert.equal(isOnCurve(b58decode('5L5k7gtNLbeXdzpvNrFshg1E1id1ceUDfc6vPUTxp98q')), true, 'a wallet is on the curve');
+  assert.equal(isOnCurve(b58decode(r.pool)), false, 'a derived address is not');
+});
+
 console.log('graduated coins: engine');
 await test('waits out the first minute, buys a graduate with steady buying, takes $5 profit', async () => {
   const ctx = await setup();
   const mint = key();
-  const pool = newPool(ctx.world, mint);
+  const pool = await newPool(ctx.world, mint);
   const t0 = Date.now();
   ctx.engine.handleMigration({ txType: 'migrate', mint }, t0, 'GRAD');
   let t = await run(ctx, mint, t0, 50, 0.6, pool); // heavy buying, but too soon
@@ -179,7 +192,7 @@ await test('waits out the first minute, buys a graduate with steady buying, take
 await test('cuts a graduate that dumps after the buy', async () => {
   const ctx = await setup();
   const mint = key();
-  const pool = newPool(ctx.world, mint);
+  const pool = await newPool(ctx.world, mint);
   const t0 = Date.now();
   ctx.engine.handleMigration({ txType: 'migrate', mint }, t0, 'DUMP');
   let t = await run(ctx, mint, t0, 70, 0.15, pool);
@@ -195,7 +208,7 @@ await test('cuts a graduate that dumps after the buy', async () => {
 await test('ignores graduates nobody is buying', async () => {
   const ctx = await setup();
   const mint = key();
-  const pool = newPool(ctx.world, mint);
+  const pool = await newPool(ctx.world, mint);
   const t0 = Date.now();
   ctx.engine.handleMigration({ txType: 'migrate', mint }, t0, 'DEAD');
   await run(ctx, mint, t0, 120, 0, pool);
@@ -205,7 +218,7 @@ await test('ignores graduates nobody is buying', async () => {
 await test('follows graduates it skips and scores every profit target', async () => {
   const ctx = await setup({ GRAD_MAX_POSITIONS: '0' });
   const mint = key();
-  const pool = newPool(ctx.world, mint);
+  const pool = await newPool(ctx.world, mint);
   const t0 = Date.now();
   ctx.engine.handleMigration({ txType: 'migrate', mint }, t0, 'SHAD');
   let t = await run(ctx, mint, t0, 70, 0.15, pool);
@@ -225,7 +238,7 @@ await test('follows graduates it skips and scores every profit target', async ()
 await test('keeps looking for the pool until it appears', async () => {
   const ctx = await setup();
   const mint = key();
-  const pool = newPool(ctx.world, mint);
+  const pool = await newPool(ctx.world, mint);
   ctx.world.hidePool = true;
   const t0 = Date.now();
   ctx.engine.handleMigration({ txType: 'migrate', mint }, t0, 'SLOW');
@@ -238,23 +251,19 @@ await test('keeps looking for the pool until it appears', async () => {
 
 await test('reports pool lookup errors instead of hiding them', async () => {
   const ctx = await setup();
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = async (url, init) => {
-    if (init?.body && JSON.parse(init.body).method === 'getProgramAccounts') return new Response(JSON.stringify({ error: { message: 'method not allowed' } }));
-    return realFetch(url, init);
-  };
+  ctx.world.rpcDown = true;
   const t0 = Date.now();
   ctx.engine.handleMigration({ txType: 'migrate', mint: key() }, t0, 'ERR');
   await ctx.tick(t0 + 2000);
-  globalThis.fetch = realFetch;
-  assert.equal(ctx.engine.lookupErrors, 1);
-  assert.match(events(ctx.DB), /couldn't look up a pool \(RPC getProgramAccounts: method not allowed\)/);
+  ctx.world.rpcDown = false;
+  assert.ok(ctx.engine.lookupErrors >= 1);
+  assert.match(events(ctx.DB), /couldn't look up a pool \(RPC getMultipleAccounts: Your IP or provider is blocked/);
 });
 
 await test('dashboard Sell button sells a graduated position', async () => {
   const ctx = await setup();
   const mint = key();
-  const pool = newPool(ctx.world, mint);
+  const pool = await newPool(ctx.world, mint);
   const t0 = Date.now();
   ctx.engine.handleMigration({ txType: 'migrate', mint }, t0, 'MAN');
   await run(ctx, mint, t0, 70, 0.15, pool);
