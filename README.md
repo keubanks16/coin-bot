@@ -30,10 +30,19 @@ putting in.
 
 **When it sells** (whichever comes first):
 
+- **Take profit:** as soon as the trade is up $5 after fees (`PUMP_TAKE_PROFIT_USD`; 0 turns it off)
 - **First downturn:** once it's up 5%, the first 12% drop from its highest point
 - **Stop loss:** −25%
 - **Stalled:** nobody has bought for 45 seconds
 - **Max hold:** 10 minutes, or the moment the coin graduates off the bonding curve
+
+**Graduation exits:** once the curve is complete, paper positions and shadow trades wait for
+a fresh Jupiter sell quote for the full holding into USDC. The simulator uses that quote
+minus the 3% paper haircut, never the completed bonding curve. If migration is still pending
+or no valid route exists, the position stays open and the bot retries; it credits no cash or
+learning outcome. Open positions retain their last valuation while waiting (not a guaranteed
+exit value). The pending graduation state survives restarts. These are simulated quote-based
+fills, not confirmed transactions or a guarantee of live execution.
 
 It never buys the same coin twice, and stops buying for the day after a −6% day.
 
@@ -46,6 +55,11 @@ for each kind of setup, pulling small samples toward the overall average so a fe
 can't fool it. After 30 lessons it only buys setups it expects to profit from, and logs why it
 skips the others. Skipped coins are still followed, so it can change its mind. The dashboard's
 "What it's learned" section shows which setups have worked best and worst.
+
+**Which profit target works.** Every coin it follows is also scored against several
+take-profit targets at once (+10%, +15%, +25%, +40%, +60% and none), following each coin until
+its other exits fire. The dashboard shows what each target would have averaged per trade after
+fees, so you can pick the target the data supports.
 
 If nothing it sees is profitable after fees, it will learn that too and mostly stop buying.
 That's the honest answer, not a bug.
@@ -227,4 +241,5 @@ the public endpoint for balance checks.
 - **`order not buildable ... code 1`.** The wallet doesn't hold enough USDC.
 - **Jupiter `401`/`403`.** Check `JUPITER_API_KEY`.
 - **Logs.** Run `npx wrangler tail` to watch the bot in real time.
+
 
