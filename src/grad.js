@@ -233,6 +233,10 @@ export class GradEngine {
     this.modelAt = 0;
     this.board = null;
     this.lastStatusAt = 0;
+    this.lookupErrors = 0;
+    this.lastLookupError = null;
+    this.gaveUp = 0;
+    this.lastWarnAt = 0;
   }
 
   /** A graduation announced by the PumpPortal feed. */
@@ -326,8 +330,18 @@ export class GradEngine {
       lookups++;
       try {
         await this.findPool(ctx, c, now);
-      } catch {}
-      if (!c.pool && now - c.migratedAt > 180e3) this.coins.delete(c.mint);
+      } catch (e) {
+        this.lookupErrors++;
+        this.lastLookupError = String(e.message || e).slice(0, 160);
+        if (now - this.lastWarnAt > 10 * 60e3) {
+          this.lastWarnAt = now;
+          await store.log('warn', `Graduated coins: couldn't look up a pool (${this.lastLookupError})`);
+        }
+      }
+      if (!c.pool && now - c.migratedAt > 180e3) {
+        this.gaveUp++;
+        this.coins.delete(c.mint);
+      }
     }
 
     // Positions this strategy holds.
@@ -457,7 +471,7 @@ export class GradEngine {
     const model = await this.loadModel(store, now);
     this.board ??= await store.get(BOARD_KEY, null);
     await store.set('grad_status', {
-      seen: this.seen, found: this.found, watching: this.coins.size, shadows: this.shadows.size, lastGradAt: this.lastGradAt, at: now,
+      seen: this.seen, found: this.found, gaveUp: this.gaveUp, lookupErrors: this.lookupErrors, lastLookupError: this.lastLookupError, watching: this.coins.size, shadows: this.shadows.size, lastGradAt: this.lastGradAt, at: now,
       learn: summarize(model, 5, GRAD_FEATURES), learnMin: cfg.LEARN_MIN_LESSONS,
       board: boardRows(this.board, cfg.GRAD_TRADE_USD, activeTp(cfg, cfg.GRAD_TRADE_USD)),
     });
