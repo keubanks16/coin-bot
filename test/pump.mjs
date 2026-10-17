@@ -388,7 +388,7 @@ await test('graduation waits for a full-size route, survives restart, and sells 
   assert.equal(trades(DB).length, 1, 'no fabricated graduation sale');
   assert.equal(await ctx.store.get('paper_cash'), cash);
   assert.ok(await ctx.store.position('paper', 'GRAD'));
-  assert.equal(await ctx.store.get('pump_model', null), null, 'no premature lesson');
+  assert.equal(await ctx.store.get('pump_model_v2', null), null, 'no premature lesson');
   const manual = await sellPosition(ctx, pos, 'manual');
   assert.equal(manual.pending, true);
   assert.equal(events(DB).split('waiting for post-migration sell route').length - 1, 1, 'warnings rate limited');
@@ -411,7 +411,7 @@ await test('graduation waits for a full-size route, survives restart, and sells 
   assert.equal(sale.usd, 38.8, 'quote less 3% haircut, no extra curve fees');
   assert.equal(await ctx.store.get('paper_cash'), cash + 38.8);
   assert.equal(await ctx.store.position('paper', 'GRAD'), null);
-  assert.equal((await ctx.store.get('pump_model')).real, 1);
+  assert.equal((await ctx.store.get('pump_model_v2')).real, 1);
   await restarted.tick(await makeContext(env), t0 + 24000);
   assert.equal(trades(DB).length, 2, 'sale recorded once');
 });
@@ -437,12 +437,12 @@ await test('graduated shadows only become lessons when a migration sell quote ex
   c.complete = true;
   await tick(t0 + 18000);
   assert.ok(engine.shadows.has('SHGRAD'));
-  assert.equal(await ctx.store.get('pump_model', null), null);
+  assert.equal(await ctx.store.get('pump_model_v2', null), null);
   delete world.curves['curve-SHGRAD'];
   routed = true;
   await tick(t0 + 20000);
   assert.equal(engine.shadows.has('SHGRAD'), false);
-  const model = await ctx.store.get('pump_model');
+  const model = await ctx.store.get('pump_model_v2');
   assert.equal(model.shadow, 1);
   assert.ok(Math.abs(model.sum - (9.7 / 20 - 1)) < 1e-9);
   assert.equal(trades(DB).length, 0);

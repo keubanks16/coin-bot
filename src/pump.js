@@ -530,8 +530,15 @@ export class PumpEngine {
       if (sh.migrated) {
         try {
           const value = await migratedValueUsd(ctx, mint, sh.tokens);
-          this.model = await saveLesson(store, sh.feats, value / sh.cost - 1, 'shadow');
-          this.modelAt = now;
+          const ret = value / sh.cost - 1;
+          const active = activeTp(cfg, sh.cost);
+          const results = { none: ret };
+          for (const l of active !== null && !TP_LEVELS.includes(active) ? [...TP_LEVELS, active] : TP_LEVELS) results[tpKey(l)] = sh.tp[tpKey(l)] ?? ret;
+          this.board = await saveBoard(store, results);
+          if (!sh.twin) {
+            this.model = await saveLesson(store, sh.feats, results[tpKey(active)] ?? ret, 'shadow');
+            this.modelAt = now;
+          }
           this.shadows.delete(mint);
         } catch {
           // Migration/indexing can take time. No invented exit or lesson while no route exists.
