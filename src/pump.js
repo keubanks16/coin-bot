@@ -12,12 +12,15 @@
 // fees and an extra per-side haircut for being slower than dedicated sniper bots.
 
 import { SOL } from './jupiter.js';
+import { featuresOf, learn, predict, summarize } from './learn.js';
 
 const CURVE_DISCRIMINATOR = [23, 183, 248, 55, 96, 216, 172, 96];
 const TOKEN_DECIMALS = 6;
 const FEED_URL = 'https://pumpportal.fun/api/data';
 const fmt = (n) => `$${Number(n).toFixed(2)}`;
 const curveKeyName = (mint) => `pump_curve_${mint}`;
+const featKeyName = (mint) => `pump_feat_${mint}`;
+const MODEL_KEY = 'pump_model';
 const dayKey = (mode, now) => `day_start_${mode}_${new Date(now).toISOString().slice(0, 10)}`;
 
 // ---- bonding curve ------------------------------------------------------------------------
@@ -84,7 +87,7 @@ export function pumpEntry(c, s, cfg, now) {
   if (!prev) return null;
   if ((price / prev.price - 1) * 100 < cfg.PUMP_MIN_TICK_RISE_PCT) return null; // climbing right now
   if (price < c.peak * (1 - cfg.PUMP_DOWNTURN_PCT)) return null; // already turning down
-  return { score: (inflow / Math.max(age, 10)) * 60, inflow, mcap: curveMcapSol(s), age };
+  return { score: (inflow / Math.max(age, 10)) * 60, inflow, mcap: curveMcapSol(s), age, rise: (price / prev.price - 1) * 100 };
 }
 
 /** Should we sell this position? `price` and `peak` are per-token USD you'd really get. */
@@ -150,15 +153,44 @@ export async function sellPumpPosition(ctx, pos, reason, sample = null) {
   await store.addTrade({ mode, side: 'sell', mint: pos.mint, symbol: pos.symbol, usd: proceeds, qty_raw: pos.qty_raw, price, pnl_usd: pnl, reason, sig: null });
   await store.set(curveKeyName(pos.mint), null);
   await store.setCooldown(mode, pos.mint, Date.now() + 24 * 3600e3);
+  const feats = await store.get(featKeyName(pos.mint));
+  if (feats) {
+    await saveLesson(store, feats, pnl / pos.cost_usd, 'real');
+    await store.set(featKeyName(pos.mint), null);
+  }
   const held = Math.round((Date.now() - pos.opened_at) / 1000);
   await store.log('info', `SELL ${pos.symbol} ${fmt(proceeds)} (${reason}, held ${held}s) P&L ${pnl >= 0 ? '+' : ''}${fmt(pnl)} (${((pnl / pos.cost_usd) * 100).toFixed(0)}%)`);
   return { ok: true, pnl };
 }
 
-function ipfsHttp(uri) {
-  if (!uri) return null;
-  if (uri.startsWith('ipfs://')) return `https://ipfs.io/ipfs/${uri.slice(7)}`;
-  return uri.startsWith('http') ? uri : null;
+/** Record a finished lesson in the shared model (read-modify-write, so dashboard sells count too). */
+async function saveLesson(store, feats, ret, kind) {
+  const model = learn(await store.get(MODEL_KEY, null), feats, ret, kind);
+  await store.set(MODEL_KEY, model);
+  return model;
+}
+
+const GATEWAYS = ['https://ipfs.io/ipfs/', 'https://gateway.pinata.cloud/ipfs/', 'https://dweb.link/ipfs/'];
+
+/** Every URL that could serve this metadata: the original plus other IPFS gateways for the same file. */
+function metadataUrls(uri) {
+  if (!uri) return [];
+  let cid = null;
+  if (uri.startsWith('ipfs://')) cid = uri.slice(7);
+  else {
+    const m = uri.match(/\/ipfs\/(.+)$/);
+    if (m) cid = m[1];
+  }
+  const urls = uri.startsWith('http') ? [uri] : [];
+  if (cid) for (const g of GATEWAYS) if (!urls.includes(g + cid)) urls.push(g + cid);
+  return urls;
+}
+
+/** Fetch coin metadata from whichever gateway answers first. */
+async function fetchMetadata(uri, ms) {
+  const urls = metadataUrls(uri);
+  if (!urls.length) return null;
+  return Promise.any(urls.map((u) => fetchJson(u, ms)));
 }
 
 async function fetchJson(url, ms) {
@@ -190,6 +222,28 @@ export class PumpEngine {
     this.busy = false;
     this.lastStatusAt = 0;
     this.lastWarnAt = {};
+    this.shadows = new Map(); // mint -> coin followed without money, to learn from
+    this.model = null;
+    this.modelAt = 0;
+  }
+
+  async loadModel(ctx, now) {
+    if (!this.model || now - this.modelAt > 60e3) {
+      this.model = await ctx.store.get(MODEL_KEY, null);
+      this.modelAt = now;
+    }
+    return this.model;
+  }
+
+  /** Start following a coin without money. */
+  addShadow(c, s, feats, solUsd, cfg, now) {
+    if (this.shadows.size >= cfg.PUMP_MAX_SHADOWS) return false;
+    const usd = cfg.PUMP_TRADE_USD;
+    const tokens = haircut(curveBuy(s, BigInt(Math.floor((usd / solUsd) * 1e9)), cfg.PUMP_FEE_BPS), cfg.PUMP_PAPER_SLIPPAGE_BPS);
+    if (tokens <= 0n) return false;
+    const entry = usd / (Number(tokens) / 10 ** TOKEN_DECIMALS);
+    this.shadows.set(c.mint, { symbol: c.symbol, curve: c.curve, feats, tokens, cost: usd, entry_price: entry, peak: entry, opened_at: now, lastVSol: s.vSol, lastUpAt: now });
+    return true;
   }
 
   /** A message from the PumpPortal feed. */
@@ -271,10 +325,11 @@ export class PumpEngine {
     if (c.vetted !== null) return c.vetted;
     let reason = null;
     if (ctx.cfg.PUMP_REQUIRE_SOCIALS) {
-      const url = ipfsHttp(c.uri);
+      const url = metadataUrls(c.uri).length > 0;
       try {
-        const meta = url ? await fetchJson(url, 3000) : null;
-        if (!meta || !(meta.twitter || meta.telegram || meta.website)) reason = 'no social links';
+        const meta = url ? await fetchMetadata(c.uri, 3000) : null;
+        c.socials = meta ? ['twitter', 'telegram', 'website'].filter((k) => meta[k]).length : 0;
+        if (!c.socials) reason = 'no social links';
       } catch {
         reason = 'metadata unavailable';
       }
@@ -301,7 +356,7 @@ export class PumpEngine {
     await adjustPaperCash(ctx, -usd);
     await store.openPosition({ mode, mint: c.mint, symbol: c.symbol, decimals: TOKEN_DECIMALS, qty_raw: tokens.toString(), cost_usd: usd, entry_price: entry, opened_at: now, buy_sig: null });
     await store.set(curveKeyName(c.mint), c.curve);
-    const why = `+${info.inflow.toFixed(1)} SOL in ${Math.round(info.age)}s, mcap ${info.mcap.toFixed(0)} SOL`;
+    const why = `+${info.inflow.toFixed(1)} SOL in ${Math.round(info.age)}s, mcap ${info.mcap.toFixed(0)} SOL${info.expected != null ? `, expects ${(info.expected * 100).toFixed(0)}%` : ''}`;
     await store.addTrade({ mode, side: 'buy', mint: c.mint, symbol: c.symbol, usd, qty_raw: tokens.toString(), price: entry, reason: `pump: ${why}`, sig: null });
     await store.log('info', `BUY ${c.symbol} ${fmt(usd)} (${why}, ~$${Math.round(info.mcap * solUsd).toLocaleString()} mcap) https://pump.fun/coin/${c.mint}`);
     this.held.set(c.mint, { curve: c.curve, lastVSol: s.vSol, lastUpAt: now });
@@ -323,7 +378,11 @@ export class PumpEngine {
     const { store, cfg, mode } = ctx;
     if (now - this.lastStatusAt >= 10e3) {
       this.lastStatusAt = now;
-      await store.set('pump_status', { feed: this.feedState, seen: this.seen, watching: this.watch.size, lastCoinAt: this.lastCoinAt, at: now });
+      const model = await this.loadModel(ctx, now);
+      await store.set('pump_status', {
+        feed: this.feedState, seen: this.seen, watching: this.watch.size, shadows: this.shadows.size,
+        lastCoinAt: this.lastCoinAt, at: now, learn: summarize(model), learnMin: cfg.LEARN_MIN_LESSONS,
+      });
     }
     if (cfg.LIVE) {
       await this.warn(ctx, 'live', 'Pump mode is paper-only for now. Set LIVE_TRADING = "false" or use another STRATEGY.', 3600e3);
@@ -346,7 +405,8 @@ export class PumpEngine {
     // One batched on-chain read for everything.
     const heldList = [...this.held.entries()];
     const watchList = [...this.watch.values()];
-    const keys = [...heldList.map(([, h]) => h.curve), ...watchList.map((c) => c.curve)];
+    const shadowList = [...this.shadows.entries()];
+    const keys = [...heldList.map(([, h]) => h.curve), ...watchList.map((c) => c.curve), ...shadowList.map(([, sh]) => sh.curve)];
     let samples = [];
     if (keys.length) {
       try {
@@ -385,6 +445,26 @@ export class PumpEngine {
       }
     }
     positions = await store.positions(mode);
+
+    // 1b) Finish shadow trades with the same exit rules, and learn from them.
+    for (let i = 0; i < shadowList.length; i++) {
+      const [mint, sh] = shadowList[i];
+      const s = samples[heldList.length + watchList.length + i];
+      if (!s) {
+        if (now - sh.opened_at > cfg.PUMP_MAX_HOLD_MIN * 60e3 * 2) this.shadows.delete(mint);
+        continue;
+      }
+      if (s.vSol > sh.lastVSol) sh.lastUpAt = now;
+      sh.lastVSol = s.vSol;
+      const value = sellValueUsd(s, sh.tokens, cfg, solUsd);
+      const price = value / (Number(sh.tokens) / 10 ** TOKEN_DECIMALS);
+      sh.peak = Math.max(sh.peak, price);
+      if (pumpExit(sh, price, sh.peak, s, sh.lastUpAt, cfg, now)) {
+        this.model = await saveLesson(store, sh.feats, value / sh.cost - 1, 'shadow');
+        this.modelAt = now;
+        this.shadows.delete(mint);
+      }
+    }
 
     // 2) Equity and daily loss guard.
     const cash = await store.get('paper_cash', cfg.PAPER_START_USD);
@@ -425,27 +505,42 @@ export class PumpEngine {
     let slots = cfg.MAX_POSITIONS - positions.length;
     let available = cash;
     let bought = 0;
-    if (!paused && !halted) {
-      for (const pick of picks) {
-        if (slots <= 0) break;
-        const usd = Math.min(cfg.PUMP_TRADE_USD, available - cfg.CASH_RESERVE_USD);
-        if (usd < cfg.MIN_TRADE_USD) break;
-        if (await store.cooldownActive(mode, pick.c.mint, now)) {
-          this.watch.delete(pick.c.mint);
-          continue;
-        }
-        const skip = await this.vet(ctx, pick.c);
-        if (skip) {
-          await store.log('info', `Skip ${pick.c.symbol}: ${skip}`);
-          this.watch.delete(pick.c.mint);
-          continue;
-        }
-        if (await this.buy(ctx, pick.c, pick.s, usd, solUsd, pick)) {
+    const model = await this.loadModel(ctx, now);
+    const trained = (model?.n || 0) >= cfg.LEARN_MIN_LESSONS;
+    for (const pick of picks) {
+      const c = pick.c;
+      if (this.shadows.has(c.mint)) continue;
+      if (await store.cooldownActive(mode, c.mint, now)) {
+        this.watch.delete(c.mint);
+        continue;
+      }
+      const skip = await this.vet(ctx, c);
+      if (skip) {
+        await store.log('info', `Skip ${c.symbol}: ${skip}`);
+        this.watch.delete(c.mint);
+        continue;
+      }
+      const feats = featuresOf({ age: pick.age, inflow: pick.inflow, mcap: pick.mcap, rise: pick.rise, devPct: c.devPct, socials: c.socials ?? 1, now });
+      const pred = predict(model, feats);
+      const learnedSkip = trained && pred.expected !== null && pred.expected * 100 < cfg.LEARN_MIN_EDGE_PCT;
+      const usd = Math.min(cfg.PUMP_TRADE_USD, available - cfg.CASH_RESERVE_USD);
+      const canBuy = !paused && !halted && slots > 0 && usd >= cfg.MIN_TRADE_USD;
+      if (canBuy && !learnedSkip) {
+        if (await this.buy(ctx, c, pick.s, usd, solUsd, { ...pick, expected: trained ? pred.expected : null })) {
+          await store.set(featKeyName(c.mint), feats);
           slots--;
           bought++;
           available -= usd;
         }
+        continue;
       }
+      // Not buying: follow it anyway so the bot learns whether it should have.
+      if (learnedSkip) {
+        const worst = pred.reasons.filter((r) => r.effect < 0).slice(0, 2).map((r) => r.label).join(', ');
+        await store.log('info', `Skip ${c.symbol}: learned this kind of setup loses (expected ${(pred.expected * 100).toFixed(0)}% from ${model.n} lessons${worst ? `; worst: ${worst}` : ''})`);
+      }
+      this.addShadow(c, pick.s, feats, solUsd, cfg, now);
+      this.watch.delete(c.mint);
     }
 
     return { mode, equity, cash, positions: positions.length, watching: this.watch.size, bought, paused, halted };

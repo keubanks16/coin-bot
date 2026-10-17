@@ -50,6 +50,12 @@ PUMP_DOWNTURN_PCT = "0.12"
 PUMP_STALL_SEC = "45"
 PUMP_MAX_HOLD_MIN = "10"
 
+# Learning (src/learn.js): after this many finished lessons (real trades + coins it followed
+# without buying), it only buys setups it expects to return more than LEARN_MIN_EDGE_PCT.
+LEARN_MIN_LESSONS = "30"
+LEARN_MIN_EDGE_PCT = "0"
+PUMP_MAX_SHADOWS = "40"
+
 # Speed. The free Jupiter key allows 1 request/sec, so these are tuned to stay inside it.
 # If you upgrade your Jupiter key, raise JUP_RPS (e.g. "10") and you can lower the others.
 TICK_SECONDS = "5"

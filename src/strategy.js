@@ -55,6 +55,9 @@ const PUMP = {
   PUMP_MAX_HOLD_MIN: 10,
   PUMP_FEE_BPS: 125, // pump.fun protocol + creator fee per side (low-market-cap tier)
   PUMP_PAPER_SLIPPAGE_BPS: 300, // paper haircut per side: real snipers get in ahead of a 2s poll
+  PUMP_MAX_SHADOWS: 40, // coins followed without money at once, to learn from (see src/learn.js)
+  LEARN_MIN_LESSONS: 30, // after this many finished lessons, the model decides what to buy...
+  LEARN_MIN_EDGE_PCT: 0, // ...and only buys setups it expects to return more than this (after fees)
 };
 
 const PROFILES = {

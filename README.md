@@ -37,6 +37,19 @@ putting in.
 
 It never buys the same coin twice, and stops buying for the day after a −6% day.
 
+**Learning from its mistakes.** Every coin that passes the filters becomes a lesson, whether the
+bot buys it or not. Coins it can't or won't buy are followed as "shadow trades" with the same
+exit rules, so it learns from far more outcomes than its real trades alone. For each lesson it
+records the setup (age, SOL bought, buying speed, market cap, how fast it was climbing, creator
+bag, social links, time of day) and the result after fees. It keeps a running average return
+for each kind of setup, pulling small samples toward the overall average so a few lucky trades
+can't fool it. After 30 lessons it only buys setups it expects to profit from, and logs why it
+skips the others. Skipped coins are still followed, so it can change its mind. The dashboard's
+"What it's learned" section shows which setups have worked best and worst.
+
+If nothing it sees is profitable after fees, it will learn that too and mostly stop buying.
+That's the honest answer, not a bug.
+
 **How paper results are kept honest.** Fills use the real on-chain curve, pump.fun's fee
 (1.25% each way at low market caps), and an extra 3% haircut each way, because sniper bots
 running next to the chain get in ahead of a 2-second poll. So every trade starts about 9% down,
