@@ -10,7 +10,48 @@ plus Pause, Run now, Sell (one) and Sell all buttons.
 
 ---
 
-## How it trades
+## Pump.fun sniper (`STRATEGY = "pump"`, the current setting)
+
+**Paper only for now.** It won't trade real money in this mode even if `LIVE_TRADING` is on.
+
+**Reading new coins.** The bot keeps one live connection to PumpPortal's free feed, which
+announces every new pump.fun coin the moment it launches. Every 2 seconds it reads each young
+coin's bonding curve straight from Solana, in one batched call, to see how much SOL people are
+putting in.
+
+**What it buys** ($20 each, up to 3 at once). A coin must be all of these:
+
+- under 3 minutes old, and at least 10 seconds old (skips the bundled launch buys)
+- at least 3 SOL of buying from other traders since launch (the creator's own buy doesn't count)
+- still cheap: market cap under 90 SOL (coins launch at about 28 SOL)
+- climbing right now: up at least 1% in the last ~4 seconds, and not already falling off its high
+- creator bought no more than 10% of the supply, and hasn't sold half of it
+- has a Twitter, Telegram or website link in its metadata
+
+**When it sells** (whichever comes first):
+
+- **First downturn:** once it's up 5%, the first 12% drop from its highest point
+- **Stop loss:** −25%
+- **Stalled:** nobody has bought for 45 seconds
+- **Max hold:** 10 minutes, or the moment the coin graduates off the bonding curve
+
+It never buys the same coin twice, and stops buying for the day after a −6% day.
+
+**How paper results are kept honest.** Fills use the real on-chain curve, pump.fun's fee
+(1.25% each way at low market caps), and an extra 3% haircut each way, because sniper bots
+running next to the chain get in ahead of a 2-second poll. So every trade starts about 9% down,
+and a coin has to really run for the bot to profit.
+
+> **Be realistic.** Most pump.fun coins go to zero within minutes; well under 1% ever
+> graduate, and only a few percent of pump.fun traders have made more than $1,000. Expect many
+> small losses. Judge it on profit factor over 100+ trades before even thinking about real money.
+
+**Tip:** set `SOLANA_RPC_URL` to a free Helius URL (https://helius.dev). The public Solana
+endpoint may rate-limit a bot that reads the chain every 2 seconds.
+
+---
+
+## Scalp strategy (`STRATEGY = "scalp"`)
 
 The bot scalps: it gets into a fresh short-term push, takes a small gain, and gets out fast.
 

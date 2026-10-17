@@ -1,5 +1,6 @@
 import { runCycle, makeContext, sellPosition } from './bot.js';
 import { loadConfig } from './strategy.js';
+import { PumpEngine } from './pump.js';
 import { USDC, USDC_DECIMALS } from './jupiter.js';
 import DASHBOARD_HTML from './dashboard.html';
 
@@ -54,7 +55,7 @@ async function getState(env) {
     trades: await store.trades(mode, 50),
     events: await store.events(40),
     stats,
-    lastScanNote: await store.get('last_scan_note', null),
+    lastScanNote: cfg.STRATEGY === 'pump' ? null : await store.get('last_scan_note', null),
     history: history.filter((_, i) => i % step === 0 || i === history.length - 1),
     rules: {
       stopLoss: cfg.STOP_LOSS_PCT,
@@ -71,6 +72,23 @@ async function getState(env) {
       scanSeconds: cfg.SCAN_EVERY_SEC,
       staleMinutes: cfg.STALE_MINUTES,
       maxRoundTripCost: cfg.MAX_ROUNDTRIP_COST_PCT,
+      pump: cfg.STRATEGY === 'pump' ? {
+        tradeUsd: cfg.PUMP_TRADE_USD,
+        maxPositions: cfg.MAX_POSITIONS,
+        poll: cfg.PUMP_POLL_SECONDS,
+        maxAge: cfg.PUMP_MAX_AGE_SEC,
+        minInflow: cfg.PUMP_MIN_INFLOW_SOL,
+        maxMcap: cfg.PUMP_MAX_MCAP_SOL,
+        maxDev: cfg.PUMP_MAX_DEV_PCT,
+        socials: !!cfg.PUMP_REQUIRE_SOCIALS,
+        stopLoss: cfg.PUMP_STOP_LOSS_PCT,
+        arm: cfg.PUMP_TRAIL_ARM_PCT,
+        downturn: cfg.PUMP_DOWNTURN_PCT,
+        stall: cfg.PUMP_STALL_SEC,
+        maxHold: cfg.PUMP_MAX_HOLD_MIN,
+        dailyLossLimit: cfg.DAILY_LOSS_LIMIT_PCT,
+        status: await store.get('pump_status', null),
+      } : null,
     },
   };
 }
@@ -138,13 +156,22 @@ export class FastMonitor {
   }
 
   async alarm() {
-    const { TICK_SECONDS } = loadConfig(this.env);
+    const cfg = loadConfig(this.env);
     // Schedule the next tick first, so an error can never stop the loop.
-    await this.state.storage.setAlarm(Date.now() + TICK_SECONDS * 1000);
+    await this.state.storage.setAlarm(Date.now() + cfg.TICK_SECONDS * 1000);
     try {
-      await runCycle(this.env);
-    } catch {
-      // already logged to the dashboard by runCycle
+      if (cfg.STRATEGY === 'pump') {
+        // The engine (and its live pump.fun feed) lives in this object's memory between ticks.
+        this.pump ??= new PumpEngine(this.env);
+        await this.pump.tick(await makeContext(this.env));
+      } else {
+        await runCycle(this.env);
+      }
+    } catch (e) {
+      try {
+        const ctx = await makeContext(this.env);
+        await ctx.store.log('error', `Fast loop: ${e.message}`);
+      } catch {}
     }
   }
 }
