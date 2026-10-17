@@ -6,7 +6,8 @@
 //    only scalps tokens where fees + slippage leave room for a profit.
 // 3. Exit — tight stop, quick take profit, trailing stop, a "dead trade" timeout, and a max hold.
 //
-// STRATEGY = "scalp" (default) or "momentum" (the original slower 1h swing strategy).
+// STRATEGY = "scalp" (default), "momentum" (the original slower 1h swing strategy), or
+// "pump" (snipes brand-new pump.fun coins; see src/pump.js).
 // Every number here can be overridden with a wrangler.toml [vars] entry of the same name.
 
 import { USDC, SOL } from './jupiter.js';
@@ -35,7 +36,47 @@ const COMMON = {
   SCAN_INTERVAL: 0, // 0 = strategy default (5m for scalp, 1h for momentum)
 };
 
+// Settings for STRATEGY = "pump" (new pump.fun coins). Always loaded; only used in pump mode.
+const PUMP = {
+  PUMP_TRADE_USD: 20, // size of each pump.fun buy
+  PUMP_MAX_POSITIONS: 3,
+  PUMP_POLL_SECONDS: 2, // how often watched coins and open positions are re-read on-chain
+  PUMP_MIN_AGE_SEC: 10, // ignore a coin's first seconds (bundled launch buys)
+  PUMP_MAX_AGE_SEC: 180, // only buy coins younger than this
+  PUMP_MIN_INFLOW_SOL: 3, // SOL other traders put in since launch (excludes the dev's own buy)
+  PUMP_MAX_MCAP_SOL: 90, // "cheap": market cap at most this (launch is ~28 SOL, graduation ~410)
+  PUMP_MIN_TICK_RISE_PCT: 1, // must be climbing right now: up this much vs. ~4 seconds ago
+  PUMP_MAX_DEV_PCT: 10, // skip if the creator bought more than this % of supply at launch
+  PUMP_REQUIRE_SOCIALS: 1, // 1 = needs a Twitter, Telegram or website link in its metadata
+  PUMP_STOP_LOSS_PCT: 0.25,
+  PUMP_TRAIL_ARM_PCT: 0.05, // once up this much...
+  PUMP_DOWNTURN_PCT: 0.12, // ...sell on the first drop of this size from the peak
+  PUMP_STALL_SEC: 45, // sell if nobody has bought for this long
+  PUMP_MAX_HOLD_MIN: 10,
+  PUMP_FEE_BPS: 125, // pump.fun protocol + creator fee per side (low-market-cap tier)
+  PUMP_PAPER_SLIPPAGE_BPS: 300, // paper haircut per side: real snipers get in ahead of a 2s poll
+};
+
 const PROFILES = {
+  pump: {
+    STOP_LOSS_PCT: 0.25,
+    TAKE_PROFIT_PCT: 10,
+    TRAIL_ARM_PCT: 0.05,
+    TRAIL_PCT: 0.12,
+    STALE_MINUTES: 0,
+    STALE_MIN_GAIN_PCT: 0,
+    MAX_HOLD_HOURS: 10 / 60,
+    COOLDOWN_HOURS: 24,
+    LOSS_COOLDOWN_HOURS: 24,
+    MIN_5M_CHANGE_PCT: 0,
+    MAX_5M_CHANGE_PCT: 0,
+    MIN_1H_CHANGE_PCT: 0,
+    MAX_1H_CHANGE_PCT: 0,
+    MIN_VOLUME_5M_USD: 0,
+    MIN_VOLUME_1H_USD: 0,
+    MIN_ORGANIC_BUY_RATIO: 0,
+    LOSS_STREAK_LIMIT: 0, // most snipes lose; the daily loss limit is the guard here
+  },
   scalp: {
     STOP_LOSS_PCT: 0.025,
     TAKE_PROFIT_PCT: 0.04,
@@ -75,8 +116,9 @@ const PROFILES = {
 };
 
 export function loadConfig(env = {}) {
-  const strategy = String(env.STRATEGY || 'scalp').toLowerCase() === 'momentum' ? 'momentum' : 'scalp';
-  const defaults = { ...COMMON, ...PROFILES[strategy] };
+  const want = String(env.STRATEGY || 'scalp').toLowerCase();
+  const strategy = PROFILES[want] ? want : 'scalp';
+  const defaults = { ...COMMON, ...PUMP, ...PROFILES[strategy] };
   // Backwards compatibility with the old minute-based scan setting.
   if (env.SCAN_EVERY_SEC === undefined && env.SCAN_EVERY_MIN !== undefined && env.SCAN_EVERY_MIN !== '') {
     env = { ...env, SCAN_EVERY_SEC: String(Number(env.SCAN_EVERY_MIN) * 60) };
@@ -89,7 +131,8 @@ export function loadConfig(env = {}) {
   }
   cfg.STRATEGY = strategy;
   cfg.SCAN_INTERVAL_NAME = strategy === 'scalp' ? '5m' : '1h';
-  cfg.TICK_SECONDS = Math.max(2, cfg.TICK_SECONDS);
+  cfg.TICK_SECONDS = Math.max(2, strategy === 'pump' ? cfg.PUMP_POLL_SECONDS : cfg.TICK_SECONDS);
+  if (strategy === 'pump') cfg.MAX_POSITIONS = cfg.PUMP_MAX_POSITIONS;
   cfg.LIVE = String(env.LIVE_TRADING || '').toLowerCase() === 'true';
   cfg.MODE = cfg.LIVE ? 'live' : 'paper';
   cfg.BLOCKLIST = new Set(
