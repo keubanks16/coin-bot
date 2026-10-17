@@ -185,6 +185,19 @@
         Math.round(q.maxAge / 60) + ' min old with ' + q.minInflow + '+ SOL of buying, market cap under ' + q.maxMcap + ' SOL, still climbing, creator under ' +
         q.maxDev + '% of supply' + (q.socials ? ', with social links' : '') + ' · sells on the first ' + pc(q.downturn) + ' drop from the peak (once up ' + pc(q.arm) +
         '), −' + pc(q.stopLoss) + ' stop, ' + q.stall + 's with no buyers, or ' + q.maxHold + ' min · re-checks every ' + q.poll + 's · stops buying after −' + pc(q.dailyLossLimit) + ' in a day';
+      var L = st2 && st2.learn;
+      var lp = function (x) { return (x >= 0 ? '+' : '−') + Math.abs(Math.round(x * 100)) + '%'; };
+      var row = function (r) { return '<div>' + esc(r.label) + ': avg ' + lp(r.avg) + ', wins ' + Math.round(r.winRate * 100) + '% (' + r.n + ')</div>'; };
+      var lh = '<br><br><b>What it\'s learned</b> · ';
+      if (!L || !L.lessons) lh += 'no lessons yet. It follows every coin it considers, bought or not, and records how each one turns out.';
+      else {
+        lh += L.lessons + ' lessons (' + L.real + ' real trades, ' + L.shadow + ' followed without buying) · average ' + lp(L.avg) + ', ' + Math.round(L.winRate * 100) + '% winners' +
+          (L.lessons < st2.learnMin ? ' · starts choosing for itself at ' + st2.learnMin + ' lessons' : ' · now only buys setups it expects to profit') +
+          (st2.shadows ? ' · following ' + st2.shadows + ' now' : '');
+        if (L.best && L.best.length) lh += '<div style="margin-top:6px"><b class="up">Works best</b>' + L.best.map(row).join('') + '</div>';
+        if (L.worst && L.worst.length) lh += '<div style="margin-top:6px"><b class="down">Works worst</b>' + L.worst.map(row).join('') + '</div>';
+      }
+      $('rules').innerHTML += lh;
       return;
     }
     var p1 = function (x) { return (Math.round(x * 1000) / 10) + '%'; };
