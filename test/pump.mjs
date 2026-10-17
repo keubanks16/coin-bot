@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { decodeCurve, curveBuy, curveSell, curveMcapSol, PumpEngine } from '../src/pump.js';
 import { makeContext, sellPosition } from '../src/bot.js';
 import { loadConfig } from '../src/strategy.js';
+import { learn, predict, featuresOf, summarize, emptyModel } from '../src/learn.js';
 
 let passed = 0;
 async function test(name, fn) {
@@ -238,6 +239,99 @@ await test('pump mode refuses to trade live', async () => {
   const r = await engine.tick(ctx, t0 + 2000);
   assert.equal(r.skipped, 'live');
   assert.match(events(DB), /paper-only/);
+});
+
+console.log('learning');
+const young = featuresOf({ age: 12, inflow: 6, mcap: 41, rise: 9, devPct: 3, socials: 1, now: Date.UTC(2026, 9, 17, 2) });
+const steady = featuresOf({ age: 110, inflow: 10, mcap: 51, rise: 2, devPct: 3, socials: 1, now: Date.UTC(2026, 9, 17, 2) });
+
+await test('learns that young, fast-pumped coins lose and steady ones win', () => {
+  let m = emptyModel();
+  for (let i = 0; i < 20; i++) m = learn(m, { ...young, inflow: 5 + (i % 4) }, -0.33);
+  for (let i = 0; i < 20; i++) m = learn(m, { ...steady, inflow: 9 + (i % 4) }, 0.25);
+  const a = predict(m, young);
+  const b = predict(m, steady);
+  assert.ok(a.expected < -0.15, `young ${a.expected}`);
+  assert.ok(b.expected > 0.1, `steady ${b.expected}`);
+  assert.match(a.reasons[0].label, /age under 20s|buying speed|4s climb/);
+  const sum = summarize(m);
+  assert.equal(sum.lessons, 40);
+  assert.ok(sum.worst.some((r) => /age under 20s/.test(r.label)));
+});
+
+await test('a couple of lucky trades cannot fool it', () => {
+  let m = emptyModel();
+  for (let i = 0; i < 40; i++) m = learn(m, steady, -0.2);
+  m = learn(m, young, 3);
+  m = learn(m, young, 3);
+  assert.ok(predict(m, young).expected < 0.15, 'two moonshots barely move it');
+});
+
+await test('follows coins it skips (shadow trades) and learns from them', async () => {
+  const { DB, world, engine, tick } = await setup({ PUMP_MAX_POSITIONS: '0' });
+  const t0 = Date.now();
+  const c = launch(world, engine, 'SHADOW', t0);
+  let t = t0;
+  for (let i = 1; i <= 8; i++) { t = t0 + i * 2000; trade(c, 0.5); await tick(t); }
+  assert.equal(trades(DB).length, 0, 'no slots, so no real trade');
+  assert.ok(engine.shadows.has('SHADOW'), 'followed as a shadow');
+  t += 2000;
+  trade(c, -6);
+  await tick(t);
+  assert.ok(!engine.shadows.has('SHADOW'));
+  const model = JSON.parse(DB.raw.prepare("SELECT v FROM state WHERE k='pump_model'").get().v);
+  assert.equal(model.n, 1);
+  assert.equal(model.shadow, 1);
+  assert.ok(model.sum < -0.25, 'recorded as a big loss');
+});
+
+await test('real trades become lessons too', async () => {
+  const { DB, world, engine, tick } = await setup();
+  const t0 = Date.now();
+  const c = launch(world, engine, 'REAL', t0);
+  let t = t0;
+  for (let i = 1; i <= 8; i++) { t = t0 + i * 2000; trade(c, 0.5); await tick(t); }
+  t += 2000;
+  trade(c, -6);
+  await tick(t);
+  const model = JSON.parse(DB.raw.prepare("SELECT v FROM state WHERE k='pump_model'").get().v);
+  assert.equal(model.real, 1);
+});
+
+await test('once trained, skips setups it has learned lose, and still buys ones that win', async () => {
+  let m = emptyModel();
+  for (let i = 0; i < 20; i++) m = learn(m, { ...young, age: 12 }, -0.33);
+  for (let i = 0; i < 20; i++) m = learn(m, { ...young, age: 60 }, 0.3);
+  const { DB, world, engine, tick } = await setup({ LEARN_MIN_LESSONS: '10' });
+  DB.raw.prepare("INSERT INTO state (k, v) VALUES ('pump_model', ?)").run(JSON.stringify(m));
+  const t0 = Date.now();
+  const fast = launch(world, engine, 'FAST', t0);
+  for (let i = 1; i <= 8; i++) { trade(fast, 0.5); await tick(t0 + i * 2000); } // buyable at ~12s old
+  assert.equal(trades(DB).length, 0, 'skipped the setup that keeps losing');
+  assert.match(events(DB), /Skip FAST: learned this kind of setup loses/);
+  assert.ok(engine.shadows.has('FAST'), 'still followed, so it can change its mind');
+
+  const t1 = Date.now() + 60e3;
+  const slow = launch(world, engine, 'SLOW', t1);
+  for (let i = 1; i <= 30; i++) { trade(slow, i < 25 ? 0.12 : 0.6); await tick(t1 + i * 2000); } // ~60s old
+  assert.equal(trades(DB).filter((x) => x.symbol === 'SLOW').length, 1, 'bought the setup that wins');
+});
+
+await test('metadata falls back to other IPFS gateways', async () => {
+  const { DB, world, engine, tick } = await setup();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const u = new URL(url);
+    if (u.hostname === 'ipfs.io') return new Response('slow', { status: 504 });
+    if (u.hostname === 'gateway.pinata.cloud') return new Response(JSON.stringify({ twitter: 'x' }));
+    return realFetch(url, init);
+  };
+  const t0 = Date.now();
+  const c = launch(world, engine, 'IPFS', t0);
+  engine.watch.get('IPFS').uri = 'https://ipfs.io/ipfs/QmTest';
+  for (let i = 1; i <= 8; i++) { trade(c, 0.5); await tick(t0 + i * 2000); }
+  assert.equal(trades(DB).length, 1);
+  globalThis.fetch = realFetch;
 });
 
 console.log(`\n${passed} pump tests passed`);
