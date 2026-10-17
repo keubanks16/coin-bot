@@ -48,6 +48,7 @@ const PUMP = {
   PUMP_MIN_TICK_RISE_PCT: 1, // must be climbing right now: up this much vs. ~4 seconds ago
   PUMP_MAX_DEV_PCT: 10, // skip if the creator bought more than this % of supply at launch
   PUMP_REQUIRE_SOCIALS: 1, // 1 = needs a Twitter, Telegram or website link in its metadata
+  PUMP_TAKE_PROFIT_USD: 5, // sell as soon as a trade is up this many dollars after fees (0 = off)
   PUMP_STOP_LOSS_PCT: 0.25,
   PUMP_TRAIL_ARM_PCT: 0.05, // once up this much...
   PUMP_DOWNTURN_PCT: 0.12, // ...sell on the first drop of this size from the peak

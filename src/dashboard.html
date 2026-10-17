@@ -183,7 +183,7 @@
         ' · ' + st2.seen + ' new coins seen · watching ' + st2.watching + (st2.lastCoinAt ? ' · last new coin ' + ago(st2.lastCoinAt) + ' ago' : '');
       $('rules').innerHTML = '<b>Pump.fun sniper</b> · ' + feed + '<br>Buys ' + usd(q.tradeUsd) + ' (up to ' + q.maxPositions + ' at once) of coins under ' +
         Math.round(q.maxAge / 60) + ' min old with ' + q.minInflow + '+ SOL of buying, market cap under ' + q.maxMcap + ' SOL, still climbing, creator under ' +
-        q.maxDev + '% of supply' + (q.socials ? ', with social links' : '') + ' · sells on the first ' + pc(q.downturn) + ' drop from the peak (once up ' + pc(q.arm) +
+        q.maxDev + '% of supply' + (q.socials ? ', with social links' : '') + (q.takeProfitUsd > 0 ? ' · takes profit at +' + usd(q.takeProfitUsd) : '') + ' · otherwise sells on the first ' + pc(q.downturn) + ' drop from the peak (once up ' + pc(q.arm) +
         '), −' + pc(q.stopLoss) + ' stop, ' + q.stall + 's with no buyers, or ' + q.maxHold + ' min · re-checks every ' + q.poll + 's · stops buying after −' + pc(q.dailyLossLimit) + ' in a day';
       var L = st2 && st2.learn;
       var lp = function (x) { return (x >= 0 ? '+' : '−') + Math.abs(Math.round(x * 100)) + '%'; };
@@ -196,6 +196,15 @@
           (st2.shadows ? ' · following ' + st2.shadows + ' now' : '');
         if (L.best && L.best.length) lh += '<div style="margin-top:6px"><b class="up">Works best</b>' + L.best.map(row).join('') + '</div>';
         if (L.worst && L.worst.length) lh += '<div style="margin-top:6px"><b class="down">Works worst</b>' + L.worst.map(row).join('') + '</div>';
+      }
+      var B = st2 && st2.board;
+      if (B && B.length) {
+        lh += '<br><br><b>Which profit target works</b> · every coin it follows is scored against each target (' + B[0].n + ' coins so far). Each row: what selling at that gain would have averaged per ' + usd(q.tradeUsd) + ' trade, after fees.' +
+          '<table><tr><th>Sell at</th><th class="r">Avg per trade</th><th class="r">Winners</th></tr>' +
+          B.map(function (b) {
+            return '<tr' + (b.active ? ' style="font-weight:600"' : '') + '><td>' + (b.target === null ? 'No target' : '+' + b.target + '% (' + usd(q.tradeUsd * b.target / 100) + ')') + (b.active ? ' ← now' : '') +
+              '</td><td class="r ' + cls(b.usd) + '">' + signed(b.usd) + '</td><td class="r">' + Math.round(b.winRate * 100) + '%</td></tr>';
+          }).join('') + '</table>';
       }
       $('rules').innerHTML += lh;
       return;
