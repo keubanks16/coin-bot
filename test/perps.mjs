@@ -211,6 +211,11 @@ await test('a crash closes every long on its stop and books the loss', async () 
 
 await test('Coinbase rate limit falls back to Kraken; total outage backs off', async () => {
   coinbaseDown = true;
+  const wipeCache = () => {
+    DB.raw.exec('DELETE FROM perp_bars');
+    DB.raw.exec("DELETE FROM state WHERE k LIKE 'perp_backfill_%'");
+  };
+  wipeCache();
   const e2 = new PerpsEngine(env);
   await ctx.store.set('perp_backtest', null);
   const r = await e2.tick(ctx);
@@ -222,6 +227,10 @@ await test('Coinbase rate limit falls back to Kraken; total outage backs off', a
   // Both sources down: one attempt, then quiet for 10 minutes.
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (url) => (new URL(url).pathname === '/price/v3' ? realFetch(url) : new Response('no', { status: 429 }));
+  // With saved history, an outage doesn't matter: the backtest runs from the database.
+  await ctx.store.set('perp_backtest', null);
+  assert.equal((await new PerpsEngine(env).tick(ctx, { force: true })).backtest, true);
+  wipeCache();
   await ctx.store.set('perp_backtest', null);
   const e3 = new PerpsEngine(env);
   assert.equal((await e3.tick(ctx)).backtest, false);
@@ -233,6 +242,16 @@ await test('Coinbase rate limit falls back to Kraken; total outage backs off', a
   globalThis.fetch = realFetch;
   coinbaseDown = false;
   await ctx.store.set('perp_backtest', bt);
+});
+
+await test('Run now re-tests from saved prices without re-downloading', async () => {
+  await engine.refreshBacktest(ctx, now); // fills the history back in
+  now += 60e3;
+  const before = candleCalls + krakenCalls;
+  await engine.refreshBacktest(ctx, now);
+  await engine.refreshBacktest(ctx, now);
+  // Saved history is fresh, so at most nothing is downloaded.
+  assert.equal(candleCalls + krakenCalls, before);
 });
 
 await test('worker routes the dashboard API to perps', async () => {

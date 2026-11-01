@@ -366,7 +366,37 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS perp_positions (
      market TEXT PRIMARY KEY, side TEXT, strat TEXT, entry REAL, size REAL, collateral REAL, atr REAL,
      stop REAL, take REAL, peak REAL, last_price REAL, opened_at INTEGER)`,
+  `CREATE TABLE IF NOT EXISTS perp_bars (
+     market TEXT NOT NULL, t INTEGER NOT NULL, o REAL, h REAL, l REAL, c REAL, PRIMARY KEY (market, t))`,
 ];
+
+const KEEP_DAYS = 90;
+
+/** Save candles we don't have yet (and the latest few, in case they were revised). */
+export async function saveBars(db, sym, bars) {
+  if (!bars.length) return 0;
+  const last = (await db.prepare('SELECT MAX(t) AS t FROM perp_bars WHERE market = ?').bind(sym).first())?.t || 0;
+  const fresh = bars.filter((b) => b.t >= last - 3 * HOUR);
+  for (let i = 0; i < fresh.length; i += 50) {
+    await db.batch(fresh.slice(i, i + 50).map((b) =>
+      db.prepare('INSERT OR REPLACE INTO perp_bars (market, t, o, h, l, c) VALUES (?, ?, ?, ?, ?, ?)').bind(sym, b.t, b.o, b.h, b.l, b.c)));
+  }
+  await db.prepare('DELETE FROM perp_bars WHERE market = ? AND t < ?').bind(sym, Date.now() - KEEP_DAYS * 24 * HOUR).run();
+  return fresh.length;
+}
+
+/** Older candles than we have can't be added by saveBars; this fills history in. */
+async function saveAllBars(db, sym, bars) {
+  for (let i = 0; i < bars.length; i += 50) {
+    await db.batch(bars.slice(i, i + 50).map((b) =>
+      db.prepare('INSERT OR REPLACE INTO perp_bars (market, t, o, h, l, c) VALUES (?, ?, ?, ?, ?, ?)').bind(sym, b.t, b.o, b.h, b.l, b.c)));
+  }
+}
+
+export async function loadBars(db, sym, since = 0) {
+  const r = await db.prepare('SELECT t, o, h, l, c FROM perp_bars WHERE market = ? AND t >= ? ORDER BY t').bind(sym, since).all();
+  return r.results || [];
+}
 
 const COLS = ['market', 'side', 'strat', 'entry', 'size', 'collateral', 'atr', 'stop', 'take', 'peak', 'last_price', 'opened_at'];
 
@@ -432,15 +462,32 @@ export class PerpsEngine {
   }
 
   async refreshBacktest(ctx, now) {
-    const { store } = ctx;
+    const { store, env } = ctx;
+    const db = env.DB;
+    await ensureSchema(db);
     const bars = {};
+    const want = (this.cfg.PERP_BT_PAGES * 300 - 24) * HOUR; // history we'd like to test on
+    let fetched = 0;
     for (const m of MARKETS) {
-      try {
-        bars[m.sym] = await fetchBars(m, this.cfg.PERP_BT_PAGES, now);
-        await sleep(400);
-      } catch (e) {
-        await store.log('warn', `Perps: couldn't load ${m.sym} price history (${e.message})`);
+      let have = await loadBars(db, m.sym, now - want - 24 * HOUR);
+      const newest = have.at(-1)?.t || 0;
+      const short = !have.length || have[0].t > now - want;
+      // Only download when the saved history is missing, too short (at most once every 6h), or stale.
+      const backfillDue = short && now - ((await store.get(`perp_backfill_${m.sym}`, 0)) || 0) > 6 * HOUR;
+      if (backfillDue || newest < now - 2 * HOUR) {
+        try {
+          if (fetched++) await sleep(1500);
+          const got = await fetchBars(m, backfillDue ? this.cfg.PERP_BT_PAGES : 1, now);
+          if (backfillDue) {
+            await saveAllBars(db, m.sym, got);
+            await store.set(`perp_backfill_${m.sym}`, now);
+          } else await saveBars(db, m.sym, got);
+          have = await loadBars(db, m.sym, now - want - 24 * HOUR);
+        } catch (e) {
+          await store.log('warn', `Perps: couldn't download ${m.sym} prices (${e.message})${have.length ? ', using the saved history' : ''}`);
+        }
       }
+      if (have.length >= WARMUP + 50) bars[m.sym] = have;
     }
     if (!Object.keys(bars).length) return null;
     const bt = runBacktests(bars, this.cfg, now);
@@ -545,9 +592,13 @@ export class PerpsEngine {
         let bars;
         try {
           bars = await fetchBars(m, 1, now);
+          await saveBars(env.DB, m.sym, bars);
         } catch (e) {
-          await store.log('warn', `Perps: ${m.sym} candles failed (${e.message})`);
-          continue;
+          bars = await loadBars(env.DB, m.sym, now - 400 * HOUR);
+          if (!bars.length || bars.at(-1).t < hour - HOUR) {
+            await store.log('warn', `Perps: ${m.sym} candles failed (${e.message})`);
+            continue;
+          }
         }
         if (bars.length < WARMUP + 1) continue;
         this.bars[m.sym] = bars;
