@@ -10,7 +10,33 @@ plus Pause, Run now, Sell (one) and Sell all buttons.
 
 ---
 
-## Pump.fun sniper (`STRATEGY = "pump"`, the current setting)
+## Jupiter Perps longs and shorts (`STRATEGY = "perps"`, the current setting)
+
+**Paper only.** It tracks real prices and charges Jupiter Perps' real costs, but opens nothing
+on-chain, even if `LIVE_TRADING` is on.
+
+- **Markets:** SOL, ETH and BTC, the coins Jupiter Perps trades. Longs and shorts.
+- **Size:** $100 margin × 2x leverage = $200 position, one per coin, up to 3 at once.
+- **Costs charged on every trade:** 0.06% to open, 0.06% to close, 0.03% slippage each way,
+  plus a borrow fee of 0.01% of the position per hour. Liquidation happens if losses eat the margin.
+- **Strategies:** *Breakout* (new 24h high/low with the trend), *Trend* (12h/48h moving-average
+  crossovers) and *Snap-back* (oversold dips in an uptrend, overbought pops in a downtrend).
+  Each has its own stop loss, trailing stop or target, and max hold time.
+- **It only trades what has worked.** Every day it backtests each strategy on each coin over the
+  last ~62 days of hourly prices (from Coinbase's free API), after every fee. A strategy only trades
+  a coin if it made money overall, had a profit factor of at least 1.15, and was still profitable
+  in the most recent half. If its paper trades then lose money over 8+ trades, it's switched off.
+  If nothing qualifies, it doesn't trade.
+- **Timing:** checks prices (Jupiter's price API) every 5 seconds for exits. Looks for new entries
+  once an hour, after each hourly candle closes. Stops opening trades after losing 5% in a day.
+- The dashboard shows the backtest scoreboard so you can see which strategies are on and why.
+  **Run now** re-runs the backtest.
+
+Settings are the `PERP_*` values in `wrangler.toml`.
+
+---
+
+## Pump.fun sniper (`STRATEGY = "pump"`)
 
 **Paper only for now.** It won't trade real money in this mode even if `LIVE_TRADING` is on.
 
