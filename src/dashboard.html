@@ -52,6 +52,7 @@
   .login input { width: 100%; font: inherit; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); margin: 12px 0; }
   a { color: var(--accent); }
   .note { color: var(--muted); font-size: 13px; margin: -4px 0 12px; }
+.sub{font-size:12px;opacity:.7;padding-top:0}
 </style>
 </head>
 <body>
@@ -154,7 +155,9 @@
       s.positions.forEach(function (p) {
         h += '<tr><td><b>' + esc(p.symbol) + '</b></td><td class="r">' + usd(p.cost) + '</td><td class="r">' + usd(p.value) +
           '</td><td class="r ' + cls(p.pnl) + '">' + signed(p.pnl) + ' (' + pct(p.pnlPct) + ')</td><td class="r">' + ago(p.openedAt) +
-          '</td><td class="r"><button data-sell="' + esc(p.mint) + '">Sell</button></td></tr>';
+          '</td><td class="r"><button data-sell="' + esc(p.mint) + '">' + (p.side ? 'Close' : 'Sell') + '</button></td></tr>' +
+          (p.side ? '<tr><td colspan="6" class="sub">' + esc(p.strat) + ' · entry $' + px(p.entry) + ' · now $' + px(p.price) + ' · stop $' + px(p.stop) +
+            (p.take ? ' · target $' + px(p.take) : '') + ' · liquidation ~$' + px(p.liq) + '</td></tr>' : '');
       });
       $('positions').innerHTML = h + '</table>';
     }
@@ -166,7 +169,7 @@
       s.trades.forEach(function (x) {
         var link = x.sig ? ' <a href="https://solscan.io/tx/' + esc(x.sig) + '" target="_blank" rel="noopener">tx</a>' : '';
         t += '<tr><td>' + ago(x.ts) + '</td><td>' + x.side + '</td><td><b>' + esc(x.symbol) + '</b>' + link + '</td><td class="r">' + usd(x.usd) +
-          '</td><td class="r">' + px(x.price) + '</td><td class="r ' + cls(x.pnl_usd || 0) + '">' + (x.side === 'sell' ? signed(x.pnl_usd) : '') +
+          '</td><td class="r">' + px(x.price) + '</td><td class="r ' + cls(x.pnl_usd || 0) + '">' + (x.side === 'sell' || x.side === 'close' ? signed(x.pnl_usd) : '') +
           '</td><td>' + esc(x.reason || '') + '</td></tr>';
       });
       $('trades').innerHTML = t + '</table>';
@@ -177,6 +180,8 @@
     }).join('') : '<div class="empty">Nothing yet.</div>';
 
     var r = s.rules;
+    $('sellAllBtn').textContent = r.perps ? 'Close all' : 'Sell all';
+    if (r.perps) { renderPerps(r.perps); return; }
     if (r.pump) {
       var q = r.pump, st2 = q.status, pc = function (x) { return Math.round(x * 100) + '%'; };
       var feed = !st2 ? 'starting…' : (st2.feed === 'connected' ? 'live feed connected' : 'feed: ' + esc(st2.feed)) +
@@ -239,6 +244,28 @@
       ' · skips tokens costing over ' + p1(r.maxRoundTripCost) + ' round trip · stops buying after −' + p1(r.dailyLossLimit) + ' in a day';
   }
 
+  function renderPerps(q) {
+    var p1 = function (x) { return (Math.round(x * 10000) / 100) + '%'; };
+    var h = '<b>Jupiter Perps</b> · SOL, ETH, BTC · longs and shorts · $' + q.collateral + ' margin × ' + q.leverage + 'x per trade · up to ' +
+      q.maxPositions + ' at once · costs ' + p1(q.fees) + ' round trip + ' + p1(q.borrowHr) + '/hour borrow · checks prices every ' + q.tickSeconds +
+      's, looks for entries every hour · stops opening trades after −' + p1(q.dailyLossLimit) + ' in a day · paper only';
+    var bt = q.backtest;
+    if (!bt) { $('rules').innerHTML = h + '<p>Backtest runs on the first tick…</p>'; return; }
+    h += '<p><b>Backtest</b> · last ' + bt.days + ' days of hourly prices, after every fee · ran ' + ago(bt.at) + ' ago · only green rows trade</p>' +
+      '<table><tr><th>Strategy</th><th>Market</th><th class="r">Trades</th><th class="r">Wins</th><th class="r">P&amp;L per $' + q.collateral +
+      '</th><th class="r">PF</th><th class="r">Paper</th><th>Status</th></tr>';
+    Object.keys(q.strategies).forEach(function (k) {
+      q.markets.forEach(function (m) {
+        var x = bt.results[k + ':' + m] || {}, rec = q.record[k + ':' + m];
+        h += '<tr><td title="' + esc(q.strategies[k].about) + '">' + esc(q.strategies[k].label) + '</td><td>' + m + '</td><td class="r">' + (x.n || 0) +
+          '</td><td class="r">' + (x.n ? Math.round(x.winRate * 100) + '%' : '–') + '</td><td class="r ' + cls(x.total || 0) + '">' + (x.n ? signed(x.total) : '–') +
+          '</td><td class="r">' + (x.n ? x.pf.toFixed(2) : '–') + '</td><td class="r ' + cls(rec ? rec.sum : 0) + '">' + (rec ? signed(rec.sum) + ' (' + rec.n + ')' : '–') +
+          '</td><td class="' + (x.enabled ? 'up' : 'down') + '">' + (x.enabled ? 'trading' : esc(x.why || 'off')) + '</td></tr>';
+      });
+    });
+    $('rules').innerHTML = h + '</table>';
+  }
+
   function drawChart(pts) {
     var svg = $('chart');
     if (pts.length < 2) { svg.innerHTML = '<text x="300" y="75" text-anchor="middle" fill="currentColor" opacity=".5" font-size="13">Not enough history yet</text>'; return; }
@@ -272,12 +299,12 @@
   $('pw').onkeydown = function (e) { if (e.key === 'Enter') $('go').onclick(); };
   $('runBtn').onclick = function () { action(this, '/api/run'); };
   $('pauseBtn').onclick = function () { action(this, state && state.paused ? '/api/resume' : '/api/pause'); };
-  $('sellAllBtn').onclick = function () { action(this, '/api/sellall', null, 'Sell every open position now and pause the bot?'); };
+  $('sellAllBtn').onclick = function () { action(this, '/api/sellall', null, (state && state.rules.perps ? 'Close every position now and pause the bot?' : 'Sell every open position now and pause the bot?')); };
   $('resetBtn').onclick = function () { action(this, '/api/reset-paper', null, 'Wipe the paper account and start over?'); };
   $('logoutBtn').onclick = function () { try { localStorage.removeItem(KEY); } catch (e) {} key = null; showLogin(''); };
   $('positions').onclick = function (e) {
     var mint = e.target.getAttribute && e.target.getAttribute('data-sell');
-    if (mint) action(e.target, '/api/sell', { mint: mint }, 'Sell this position now?');
+    if (mint) action(e.target, '/api/sell', { mint: mint }, (state && state.rules.perps ? 'Close this position now?' : 'Sell this position now?'));
   };
 
   if (key) refresh(); else showLogin('');
