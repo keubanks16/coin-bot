@@ -130,9 +130,25 @@ Date.now = () => now;
 const trendUp = (i) => 100 * Math.exp(0.002 * i) * (1 + 0.004 * Math.sin(i / 3));
 let livePx = null;
 let candleCalls = 0;
+let coinbaseDown = false;
+let krakenCalls = 0;
 globalThis.fetch = async (url) => {
   const u = new URL(url);
+  if (u.hostname === 'api.kraken.com') {
+    krakenCalls++;
+    const t0 = Date.UTC(2026, 8, 1);
+    const last = Math.floor(now / HOUR) * HOUR; // includes the unfinished bar, like Kraken
+    const rows = [];
+    for (let t = last - 719 * HOUR; t <= last; t += HOUR) {
+      const i = (t - t0) / HOUR;
+      const c = trendUp(i);
+      const o = trendUp(i - 1);
+      rows.push([t / 1000, String(o), String(Math.max(o, c) * 1.002), String(Math.min(o, c) * 0.998), String(c), '0', '1', 1]);
+    }
+    return new Response(JSON.stringify({ error: [], result: { [u.searchParams.get('pair')]: rows, last: 0 } }));
+  }
   if (u.hostname === 'api.exchange.coinbase.com') {
+    if (coinbaseDown) return new Response('slow down', { status: 429 });
     candleCalls++;
     const end = Date.parse(u.searchParams.get('end'));
     const start = Date.parse(u.searchParams.get('start'));
@@ -191,6 +207,32 @@ await test('a crash closes every long on its stop and books the loss', async () 
   assert.ok(s.stats.sells >= open.length && s.stats.realized < 0);
   assert.ok(s.equity < 1000 && s.equity > 800);
   assert.ok(s.trades.some((t) => t.side === 'close' && t.pnl_usd < 0));
+});
+
+await test('Coinbase rate limit falls back to Kraken; total outage backs off', async () => {
+  coinbaseDown = true;
+  const e2 = new PerpsEngine(env);
+  await ctx.store.set('perp_backtest', null);
+  const r = await e2.tick(ctx);
+  assert.equal(r.backtest, true);
+  assert.equal(krakenCalls, 3);
+  const bt = await ctx.store.get('perp_backtest');
+  assert.ok(bt.days >= 29 && bt.days <= 31, `kraken days ${bt.days}`);
+  assert.deepEqual(bt.missing, []);
+  // Both sources down: one attempt, then quiet for 10 minutes.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => (new URL(url).pathname === '/price/v3' ? realFetch(url) : new Response('no', { status: 429 }));
+  await ctx.store.set('perp_backtest', null);
+  const e3 = new PerpsEngine(env);
+  assert.equal((await e3.tick(ctx)).backtest, false);
+  let calls = 0;
+  globalThis.fetch = async (url) => { calls++; return realFetch(url); };
+  now += 5e3;
+  await e3.tick(ctx);
+  assert.equal(calls, 0, 'no retry storm');
+  globalThis.fetch = realFetch;
+  coinbaseDown = false;
+  await ctx.store.set('perp_backtest', bt);
 });
 
 await test('worker routes the dashboard API to perps', async () => {
