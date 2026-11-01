@@ -31,9 +31,20 @@ database_id = "96bb9edb-44e5-453a-a54f-74dea3cd4960"
 LIVE_TRADING = "false"
 PAPER_START_USD = "1000"
 
-# "pump" (snipe brand-new pump.fun coins, paper only), "scalp" (fast in-and-out on established
-# coins) or "momentum" (the original slower 1h swing strategy).
-STRATEGY = "pump"
+# "perps" (longs and shorts on Jupiter Perps: SOL, ETH, BTC — paper only), "pump" (snipe
+# brand-new pump.fun coins, paper only), "scalp" (fast in-and-out on established coins) or
+# "momentum" (the original slower 1h swing strategy).
+STRATEGY = "perps"
+
+# Jupiter Perps (src/perps.js, only used when STRATEGY = "perps"). It backtests three long/short
+# strategies daily on ~62 days of hourly prices, after fees, and only trades the ones that made money.
+PERP_COLLATERAL_USD = "100"
+PERP_LEVERAGE = "2"
+PERP_MAX_POSITIONS = "3"
+PERP_DAILY_LOSS_LIMIT_PCT = "0.05"
+PERP_BORROW_HR_PCT = "0.0001"
+PERP_MIN_BT_TRADES = "8"
+PERP_MIN_BT_PF = "1.15"
 
 # Pump.fun sniper (only used when STRATEGY = "pump"; full list in src/strategy.js)
 PUMP_TRADE_USD = "20"

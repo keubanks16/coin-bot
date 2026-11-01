@@ -1,6 +1,7 @@
 import { runCycle, makeContext, sellPosition } from './bot.js';
 import { loadConfig } from './strategy.js';
 import { PumpEngine } from './pump.js';
+import { PerpsEngine, perpsState, closePerp, closeAllPerps, resetPerps } from './perps.js';
 import { USDC, USDC_DECIMALS } from './jupiter.js';
 import DASHBOARD_HTML from './dashboard.html';
 
@@ -16,7 +17,13 @@ function authorized(req, env) {
   return diff === 0;
 }
 
+const isPerps = (env) => String(env.STRATEGY || '').toLowerCase() === 'perps';
+
+// Perps never sign anything, so it never needs the wallet key even if LIVE_TRADING is set.
+const perpsContext = (env) => makeContext({ ...env, LIVE_TRADING: 'false' });
+
 async function getState(env) {
+  if (isPerps(env)) return perpsState(await perpsContext(env));
   const ctx = await makeContext(env);
   const { store, cfg, mode } = ctx;
   const now = Date.now();
@@ -102,6 +109,7 @@ async function getState(env) {
 
 async function handleApi(req, env, path) {
   if (!authorized(req, env)) return json({ error: 'unauthorized' }, 401);
+  if (isPerps(env)) return handlePerpsApi(req, env, path);
   const ctx = await makeContext(env);
   const { store } = ctx;
 
@@ -142,6 +150,42 @@ async function handleApi(req, env, path) {
   }
 }
 
+async function handlePerpsApi(req, env, path) {
+  const ctx = await perpsContext(env);
+  const { store } = ctx;
+  if (req.method === 'GET' && path === '/api/state') return json(await perpsState(ctx));
+  if (req.method !== 'POST') return json({ error: 'not found' }, 404);
+  switch (path) {
+    case '/api/pause':
+      await store.set('paused', true);
+      await store.log('info', 'Paused new trades (open positions are still managed)');
+      return json({ ok: true });
+    case '/api/resume':
+      await store.set('paused', false);
+      await store.log('info', 'Resumed');
+      return json({ ok: true });
+    case '/api/run':
+      return json(await new PerpsEngine(env).tick(ctx, { force: true }));
+    case '/api/sell': {
+      const { mint } = await req.json();
+      const r = await closePerp(ctx, mint);
+      return json(r, r.error ? 404 : 200);
+    }
+    case '/api/sellall': {
+      await store.set('paused', true);
+      const results = await closeAllPerps(ctx);
+      await store.log('warn', 'CLOSE ALL pressed — bot paused');
+      return json({ results });
+    }
+    case '/api/reset-paper':
+      await resetPerps(ctx);
+      await store.log('info', 'Perps paper account reset');
+      return json({ ok: true });
+    default:
+      return json({ error: 'not found' }, 404);
+  }
+}
+
 // Fast loop. Cron can only fire once a minute, so a Durable Object alarm re-runs the cycle
 // every TICK_SECONDS (default 5s). The every-minute cron just makes sure the loop is alive.
 export class FastMonitor {
@@ -164,10 +208,14 @@ export class FastMonitor {
 
   async alarm() {
     const cfg = loadConfig(this.env);
+    const tick = isPerps(this.env) ? Math.max(2, Number(this.env.TICK_SECONDS) || 5) : cfg.TICK_SECONDS;
     // Schedule the next tick first, so an error can never stop the loop.
-    await this.state.storage.setAlarm(Date.now() + cfg.TICK_SECONDS * 1000);
+    await this.state.storage.setAlarm(Date.now() + tick * 1000);
     try {
-      if (cfg.STRATEGY === 'pump') {
+      if (isPerps(this.env)) {
+        this.perps ??= new PerpsEngine(this.env);
+        await this.perps.tick(await perpsContext(this.env));
+      } else if (cfg.STRATEGY === 'pump') {
         // The engine (and its live pump.fun feed) lives in this object's memory between ticks.
         this.pump ??= new PumpEngine(this.env);
         await this.pump.tick(await makeContext(this.env));
@@ -190,7 +238,8 @@ async function kickTicker(env) {
 
 export default {
   async scheduled(_event, env, ctx) {
-    if (env.FAST_MONITOR) ctx.waitUntil(kickTicker(env).catch(() => runCycle(env).catch(() => {})));
+    if (env.FAST_MONITOR) ctx.waitUntil(kickTicker(env).catch(() => (isPerps(env) ? null : runCycle(env).catch(() => {}))));
+    else if (isPerps(env)) ctx.waitUntil(perpsContext(env).then((c) => new PerpsEngine(env).tick(c)).catch(() => {}));
     else ctx.waitUntil(runCycle(env).catch(() => {}));
   },
 
