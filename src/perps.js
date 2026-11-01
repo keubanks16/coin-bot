@@ -14,9 +14,9 @@
 // instructions, which this bot does not send; LIVE_TRADING is ignored for perps.
 
 export const MARKETS = [
-  { sym: 'SOL', mint: 'So11111111111111111111111111111111111111112', cb: 'SOL-USD' },
-  { sym: 'ETH', mint: '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs', cb: 'ETH-USD' },
-  { sym: 'BTC', mint: '3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh', cb: 'BTC-USD' },
+  { sym: 'SOL', mint: 'So11111111111111111111111111111111111111112', cb: 'SOL-USD', kr: 'SOLUSD' },
+  { sym: 'ETH', mint: '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs', cb: 'ETH-USD', kr: 'ETHUSD' },
+  { sym: 'BTC', mint: '3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh', cb: 'BTC-USD', kr: 'XBTUSD' },
 ];
 
 const HOUR = 3600e3;
@@ -313,23 +313,51 @@ export function runBacktests(barsByMarket, cfg, at = Date.now()) {
 
 // ---------------------------------------------------------------- data
 
-/** Hourly candles, oldest first, completed bars only. */
-export async function fetchBars(product, pages = 1, now = Date.now()) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const UA = { accept: 'application/json', 'user-agent': 'phantom-alt-bot' };
+
+/** Hourly candles from Coinbase (300 per page), oldest first, completed bars only. */
+export async function coinbaseBars(product, pages = 1, now = Date.now()) {
   const byT = new Map();
   let end = Math.floor(now / HOUR) * HOUR;
   for (let p = 0; p < pages; p++) {
+    if (p) await sleep(400); // stay well under Coinbase's public rate limit
     const start = end - 300 * HOUR;
     const q = new URLSearchParams({ granularity: '3600', start: new Date(start).toISOString(), end: new Date(end).toISOString() });
-    const res = await fetch(`https://api.exchange.coinbase.com/products/${product}/candles?${q}`, {
-      headers: { accept: 'application/json', 'user-agent': 'phantom-alt-bot' },
-    });
-    if (!res.ok) throw new Error(`candles ${product} HTTP ${res.status}`);
+    const res = await fetch(`https://api.exchange.coinbase.com/products/${product}/candles?${q}`, { headers: UA });
+    if (!res.ok) throw new Error(`Coinbase ${product} HTTP ${res.status}`);
     const rows = await res.json();
     if (!Array.isArray(rows) || !rows.length) break;
     for (const [t, l, h, o, c] of rows) byT.set(t * 1000, { t: t * 1000, o, h, l, c });
     end = start;
   }
   return [...byT.values()].filter((b) => b.t + HOUR <= now).sort((a, b) => a.t - b.t);
+}
+
+/** Hourly candles from Kraken: the last 720 hours (30 days) in one request. */
+export async function krakenBars(pair, now = Date.now()) {
+  const res = await fetch(`https://api.kraken.com/0/public/OHLC?pair=${pair}&interval=60`, { headers: UA });
+  if (!res.ok) throw new Error(`Kraken ${pair} HTTP ${res.status}`);
+  const j = await res.json();
+  if (j.error?.length) throw new Error(`Kraken ${pair}: ${j.error.join(', ')}`);
+  const key = Object.keys(j.result || {}).find((k) => k !== 'last');
+  return (j.result?.[key] || [])
+    .map(([t, o, h, l, c]) => ({ t: t * 1000, o: +o, h: +h, l: +l, c: +c }))
+    .filter((b) => b.t + HOUR <= now)
+    .sort((a, b) => a.t - b.t);
+}
+
+/** Coinbase first (longer history); Kraken if Coinbase refuses. */
+export async function fetchBars(m, pages = 1, now = Date.now()) {
+  try {
+    return await coinbaseBars(m.cb, pages, now);
+  } catch (e) {
+    try {
+      return await krakenBars(m.kr, now);
+    } catch (e2) {
+      throw new Error(`${e.message}; ${e2.message}`);
+    }
+  }
 }
 
 // ---------------------------------------------------------------- storage
@@ -408,13 +436,15 @@ export class PerpsEngine {
     const bars = {};
     for (const m of MARKETS) {
       try {
-        bars[m.sym] = await fetchBars(m.cb, this.cfg.PERP_BT_PAGES, now);
+        bars[m.sym] = await fetchBars(m, this.cfg.PERP_BT_PAGES, now);
+        await sleep(400);
       } catch (e) {
         await store.log('warn', `Perps: couldn't load ${m.sym} price history (${e.message})`);
       }
     }
     if (!Object.keys(bars).length) return null;
     const bt = runBacktests(bars, this.cfg, now);
+    bt.missing = MARKETS.filter((m) => !bars[m.sym]).map((m) => m.sym);
     await store.set('perp_backtest', bt);
     for (const [k, v] of Object.entries(bars)) this.bars[k] = v.slice(-400);
     const on = Object.entries(bt.results).filter(([, r]) => r.enabled).map(([k]) => k.replace(':', ' on '));
@@ -478,10 +508,14 @@ export class PerpsEngine {
     }
 
     let bt = await store.get('perp_backtest', null);
-    if (force || !bt || now - bt.at > 24 * HOUR) {
-      bt = await this.refreshBacktest(ctx, now);
-      return { backtest: !!bt };
+    const due = !bt || now - bt.at > 24 * HOUR || (bt.missing?.length && now - bt.at > HOUR);
+    if (force || (due && now >= (this.btRetryAt || 0))) {
+      const fresh = await this.refreshBacktest(ctx, now);
+      // If price history couldn't load, wait 10 minutes before asking again.
+      this.btRetryAt = fresh ? 0 : now + 10 * 60e3;
+      if (fresh || !bt) return { backtest: !!fresh };
     }
+    if (!bt) return { backtest: false };
 
     const prices = await this.prices(ctx);
     const positions = await loadPositions(env.DB);
@@ -510,7 +544,7 @@ export class PerpsEngine {
       for (const m of MARKETS) {
         let bars;
         try {
-          bars = await fetchBars(m.cb, 1, now);
+          bars = await fetchBars(m, 1, now);
         } catch (e) {
           await store.log('warn', `Perps: ${m.sym} candles failed (${e.message})`);
           continue;
